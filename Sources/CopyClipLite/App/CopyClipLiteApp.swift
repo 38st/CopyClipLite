@@ -2,6 +2,8 @@ import AppKit
 import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    var store: ClipboardStore?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
@@ -11,7 +13,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        ClipboardStore.clearUnpinnedHistoryOnQuitIfNeeded()
+        if let store {
+            store.clearUnpinnedHistoryOnQuitIfNeeded()
+        } else {
+            ClipboardStore.clearUnpinnedHistoryOnQuitIfNeeded()
+        }
     }
 }
 
@@ -25,6 +31,7 @@ struct CopyClipLiteApp: App {
         WindowGroup("CopyClip Lite", id: "main") {
             RootWindowView(store: store)
                 .frame(minWidth: 390, idealWidth: 420, minHeight: 560, idealHeight: 620)
+                .onAppear { appDelegate.store = store }
         }
         .defaultSize(width: 420, height: 620)
 

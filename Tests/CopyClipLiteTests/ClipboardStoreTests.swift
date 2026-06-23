@@ -62,6 +62,61 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertTrue(store.items.contains { $0.text == "pinned" })
     }
 
+    func testTogglePinDoesNotTrimJustUnpinnedItem() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let now = Date()
+        let clips = (0..<10).map { index in
+            ClipboardItem(text: "clip-\(index)", lastCopiedAt: now.addingTimeInterval(TimeInterval(-index)))
+        }
+        storage.save(clips + [
+            ClipboardItem(text: "pinned", lastCopiedAt: now.addingTimeInterval(-1_000), isPinned: true)
+        ])
+
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: storage,
+            defaults: makeDefaults()
+        )
+        store.setHistoryLimit(10)
+
+        guard let pinnedItem = store.items.first(where: { $0.text == "pinned" }) else {
+            XCTFail("Pinned item should exist")
+            return
+        }
+
+        store.togglePin(pinnedItem)
+
+        XCTAssertTrue(store.items.contains { $0.text == "pinned" })
+    }
+
+    func testClearUnpinnedOnQuitKeepsPinnedItems() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let defaults = makeDefaults()
+        defaults.set(true, forKey: "clearUnpinnedOnQuit")
+
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: storage,
+            defaults: defaults
+        )
+        store.setHistoryLimit(10)
+
+        let pinned = ClipboardItem(text: "pinned", isPinned: true)
+        let unpinned = ClipboardItem(text: "unpinned")
+        store.togglePin(pinned)
+        // Directly insert items for the test via copy workaround
+        storage.save([pinned, unpinned])
+        let reloadedStore = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: storage,
+            defaults: defaults
+        )
+        reloadedStore.clearUnpinnedHistoryOnQuitIfNeeded()
+
+        XCTAssertEqual(reloadedStore.items.count, 1)
+        XCTAssertEqual(reloadedStore.items.first?.text, "pinned")
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("CopyClipLiteTests-\(UUID().uuidString)", isDirectory: true)

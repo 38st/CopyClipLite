@@ -38,14 +38,17 @@ final class LoginItemController: ObservableObject {
     }
 
     func setEnabled(_ shouldEnable: Bool) {
-        do {
+        if status == .requiresApproval {
             if shouldEnable {
-                if status == .requiresApproval {
-                    SMAppService.openSystemSettingsLoginItems()
-                } else if status != .enabled {
-                    try SMAppService.mainApp.register()
-                }
-            } else if status != .notRegistered {
+                SMAppService.openSystemSettingsLoginItems()
+            }
+            return
+        }
+
+        do {
+            if shouldEnable && status != .enabled {
+                try SMAppService.mainApp.register()
+            } else if !shouldEnable && status != .notRegistered {
                 try SMAppService.mainApp.unregister()
             }
 

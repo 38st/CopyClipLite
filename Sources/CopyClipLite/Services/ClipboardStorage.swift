@@ -16,8 +16,14 @@ struct ClipboardStorage {
     }
 
     func load() -> [ClipboardItem] {
-        guard let data = try? Data(contentsOf: fileURL) else {
-            backupExistingStore(reason: "unreadable")
+        guard fileManager.fileExists(atPath: fileURL.path) else {
+            return []
+        }
+
+        let data: Data
+        do {
+            data = try Data(contentsOf: fileURL)
+        } catch {
             return []
         }
 
@@ -32,7 +38,7 @@ struct ClipboardStorage {
 
     func save(_ items: [ClipboardItem]) {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.outputFormatting = .sortedKeys
 
         guard let data = try? encoder.encode(items) else {
             return

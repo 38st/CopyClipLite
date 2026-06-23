@@ -45,6 +45,12 @@ final class ClipboardStore: ObservableObject {
     @Published var isMonitoringEnabled: Bool {
         didSet {
             defaults.set(isMonitoringEnabled, forKey: DefaultsKey.monitoringEnabled)
+            if isMonitoringEnabled {
+                lastPasteboardChangeCount = pasteboard.changeCount
+                startMonitoring()
+            } else {
+                stopMonitoring()
+            }
         }
     }
     @Published private(set) var lastCopiedID: ClipboardItem.ID?
@@ -55,6 +61,8 @@ final class ClipboardStore: ObservableObject {
     private var lastPasteboardChangeCount: Int
     private var timer: Timer?
     private var pruneTimer: Timer?
+    private var clearCopiedIndicatorTask: Task<Void, Never>?
+    private var persistTask: Task<Void, Never>?
 
     var storageLocation: URL {
         storage.fileURL
@@ -93,8 +101,11 @@ final class ClipboardStore: ObservableObject {
             ?? true
         self.lastPasteboardChangeCount = pasteboard.changeCount
 
+        let oldItems = items
         pruneHistory()
-        persist()
+        if items != oldItems {
+            persist()
+        }
         startMonitoring()
         startPeriodicPruning()
     }
@@ -102,6 +113,8 @@ final class ClipboardStore: ObservableObject {
     deinit {
         timer?.invalidate()
         pruneTimer?.invalidate()
+        clearCopiedIndicatorTask?.cancel()
+        persistTask?.cancel()
     }
 
     func visibleItems(matching query: String) -> [ClipboardItem] {
@@ -148,7 +161,7 @@ final class ClipboardStore: ObservableObject {
         }
 
         items[index].isPinned.toggle()
-        pruneHistory()
+        removeExpiredUnpinnedItems(now: Date())
         persist()
     }
 
@@ -168,6 +181,7 @@ final class ClipboardStore: ObservableObject {
     }
 
     private func startMonitoring() {
+        guard isMonitoringEnabled else { return }
         timer?.invalidate()
 
         let timer = Timer(timeInterval: Self.pollInterval, repeats: true) { [weak self] _ in
@@ -178,6 +192,11 @@ final class ClipboardStore: ObservableObject {
 
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
+    }
+
+    private func stopMonitoring() {
+        timer?.invalidate()
+        timer = nil
     }
 
     private func startPeriodicPruning() {
@@ -195,11 +214,6 @@ final class ClipboardStore: ObservableObject {
 
     private func pollPasteboard() {
         let currentChangeCount = pasteboard.changeCount
-
-        guard isMonitoringEnabled else {
-            lastPasteboardChangeCount = currentChangeCount
-            return
-        }
 
         guard currentChangeCount != lastPasteboardChangeCount else {
             return
@@ -236,6 +250,21 @@ final class ClipboardStore: ObservableObject {
 
         let pinnedItems = storage.load().filter(\.isPinned)
         storage.save(pinnedItems)
+    }
+
+    func clearUnpinnedHistoryOnQuitIfNeeded() {
+        guard clearUnpinnedOnQuit else {
+            flushPendingPersist()
+            return
+        }
+
+        if keepPinnedOnClear {
+            items.removeAll { !$0.isPinned }
+        } else {
+            items.removeAll()
+        }
+
+        flushPendingPersist()
     }
 
     private func record(_ text: String) {
@@ -288,31 +317,38 @@ final class ClipboardStore: ObservableObject {
 
     private func trimToLimit() {
         var unpinnedCount = 0
-
-        items = items
-            .sorted { $0.lastCopiedAt > $1.lastCopiedAt }
-            .filter { item in
-                if item.isPinned {
-                    return true
-                }
-
-                unpinnedCount += 1
-                return unpinnedCount <= historyLimit
+        items.removeAll { item in
+            if item.isPinned {
+                return false
             }
+            unpinnedCount += 1
+            return unpinnedCount > historyLimit
+        }
     }
 
     private func persist() {
+        persistTask?.cancel()
+        let snapshot = items
+        let storageRef = storage
+        persistTask = Task.detached(priority: .utility) {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled else { return }
+            storageRef.save(snapshot)
+        }
+    }
+
+    func flushPendingPersist() {
+        persistTask?.cancel()
+        persistTask = nil
         storage.save(items)
     }
 
     private func clearCopiedIndicator(after id: ClipboardItem.ID) {
-        Task { @MainActor [weak self] in
+        clearCopiedIndicatorTask?.cancel()
+        clearCopiedIndicatorTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 1_200_000_000)
-
-            guard self?.lastCopiedID == id else {
-                return
-            }
-
+            guard !Task.isCancelled else { return }
+            guard self?.lastCopiedID == id else { return }
             self?.lastCopiedID = nil
         }
     }

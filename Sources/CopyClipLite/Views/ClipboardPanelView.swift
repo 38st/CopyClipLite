@@ -6,20 +6,12 @@ struct ClipboardPanelView: View {
     @Environment(\.openWindow) private var openWindow
     @State private var searchText = ""
 
-    private var visibleItems: [ClipboardItem] {
-        store.visibleItems(matching: searchText)
-    }
-
-    private var pinnedItems: [ClipboardItem] {
-        visibleItems.filter(\.isPinned)
-    }
-
-    private var recentItems: [ClipboardItem] {
-        visibleItems.filter { !$0.isPinned }
-    }
-
     var body: some View {
-        VStack(spacing: 0) {
+        let visible = store.visibleItems(matching: searchText)
+        let pinned = visible.filter(\.isPinned)
+        let recent = visible.filter { !$0.isPinned }
+
+        return VStack(spacing: 0) {
             header
 
             Divider()
@@ -28,7 +20,7 @@ struct ClipboardPanelView: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
 
-            content
+            content(visible: visible, pinned: pinned, recent: recent)
 
             Divider()
 
@@ -93,7 +85,7 @@ struct ClipboardPanelView: View {
             TextField("Search history", text: $searchText)
                 .textFieldStyle(.plain)
                 .onSubmit {
-                    if let firstItem = visibleItems.first {
+                    if let firstItem = store.visibleItems(matching: searchText).first {
                         store.copy(firstItem)
                     }
                 }
@@ -118,17 +110,17 @@ struct ClipboardPanelView: View {
     }
 
     @ViewBuilder
-    private var content: some View {
-        if visibleItems.isEmpty {
+    private func content(visible: [ClipboardItem], pinned: [ClipboardItem], recent: [ClipboardItem]) -> some View {
+        if visible.isEmpty {
             EmptyHistoryView(isSearching: !searchText.isEmpty)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
-                    if !pinnedItems.isEmpty {
+                    if !pinned.isEmpty {
                         SectionHeader(title: "Pinned")
 
-                        ForEach(pinnedItems) { item in
+                        ForEach(pinned) { item in
                             ClipboardItemRow(
                                 item: item,
                                 isCopied: store.lastCopiedID == item.id,
@@ -139,10 +131,10 @@ struct ClipboardPanelView: View {
                         }
                     }
 
-                    if !recentItems.isEmpty {
-                        SectionHeader(title: pinnedItems.isEmpty ? "Recent" : "History")
+                    if !recent.isEmpty {
+                        SectionHeader(title: pinned.isEmpty ? "Recent" : "History")
 
-                        ForEach(recentItems) { item in
+                        ForEach(recent) { item in
                             ClipboardItemRow(
                                 item: item,
                                 isCopied: store.lastCopiedID == item.id,

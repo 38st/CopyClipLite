@@ -6,14 +6,69 @@ enum ClipboardContentKind: String, Codable, Hashable {
 }
 
 struct ClipboardImagePayload: Codable, Hashable {
-    var data: Data
+    var data: Data?
+    var fileName: String?
+    var thumbnailData: Data?
+    var thumbnailFileName: String?
     var width: Int
     var height: Int
+    var byteCount: Int
+    var contentHash: String?
 
-    init(data: Data, width: Int, height: Int) {
+    enum CodingKeys: String, CodingKey {
+        case data, fileName, thumbnailData, thumbnailFileName, width, height, byteCount, contentHash
+    }
+
+    init(
+        data: Data? = nil,
+        fileName: String? = nil,
+        thumbnailData: Data? = nil,
+        thumbnailFileName: String? = nil,
+        width: Int,
+        height: Int,
+        byteCount: Int? = nil,
+        contentHash: String? = nil
+    ) {
         self.data = data
+        self.fileName = fileName
+        self.thumbnailData = thumbnailData
+        self.thumbnailFileName = thumbnailFileName
         self.width = max(width, 0)
         self.height = max(height, 0)
+        self.byteCount = byteCount ?? data?.count ?? 0
+        self.contentHash = contentHash
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        data = try c.decodeIfPresent(Data.self, forKey: .data)
+        fileName = try c.decodeIfPresent(String.self, forKey: .fileName)
+        thumbnailData = try c.decodeIfPresent(Data.self, forKey: .thumbnailData)
+        thumbnailFileName = try c.decodeIfPresent(String.self, forKey: .thumbnailFileName)
+        width = max(try c.decodeIfPresent(Int.self, forKey: .width) ?? 0, 0)
+        height = max(try c.decodeIfPresent(Int.self, forKey: .height) ?? 0, 0)
+        byteCount = try c.decodeIfPresent(Int.self, forKey: .byteCount) ?? data?.count ?? 0
+        contentHash = try c.decodeIfPresent(String.self, forKey: .contentHash)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+
+        if fileName == nil {
+            try c.encodeIfPresent(data, forKey: .data)
+        }
+
+        try c.encodeIfPresent(fileName, forKey: .fileName)
+
+        if thumbnailFileName == nil {
+            try c.encodeIfPresent(thumbnailData, forKey: .thumbnailData)
+        }
+
+        try c.encodeIfPresent(thumbnailFileName, forKey: .thumbnailFileName)
+        try c.encode(width, forKey: .width)
+        try c.encode(height, forKey: .height)
+        try c.encode(byteCount, forKey: .byteCount)
+        try c.encodeIfPresent(contentHash, forKey: .contentHash)
     }
 
     var dimensionsText: String {
@@ -25,7 +80,11 @@ struct ClipboardImagePayload: Codable, Hashable {
     }
 
     var byteCountText: String {
-        ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file)
+        ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file)
+    }
+
+    var displayData: Data? {
+        thumbnailData ?? data
     }
 }
 
@@ -68,6 +127,7 @@ struct ClipboardItem: Identifiable, Codable, Hashable {
 
     init(
         id: UUID = UUID(),
+        text: String = "",
         image: ClipboardImagePayload,
         createdAt: Date = Date(),
         lastCopiedAt: Date = Date(),
@@ -75,15 +135,15 @@ struct ClipboardItem: Identifiable, Codable, Hashable {
         copyCount: Int = 1
     ) {
         self.id = id
-        self.text = ""
+        self.text = text
         self.contentKind = .image
         self.image = image
         self.createdAt = createdAt
         self.lastCopiedAt = lastCopiedAt
         self.isPinned = isPinned
         self.copyCount = copyCount
-        self.cachedPreview = Self.previewText(contentKind: .image, text: "", image: image)
-        self.cachedCharacterCount = 0
+        self.cachedPreview = Self.previewText(contentKind: .image, text: text, image: image)
+        self.cachedCharacterCount = text.count
     }
 
     init(from decoder: Decoder) throws {
@@ -127,7 +187,7 @@ struct ClipboardItem: Identifiable, Codable, Hashable {
         case .text:
             text
         case .image:
-            "image \(image?.dimensionsText ?? "")"
+            "image \(image?.dimensionsText ?? "") \(text)"
         }
     }
 
@@ -171,7 +231,8 @@ struct ClipboardItem: Identifiable, Codable, Hashable {
         case .text:
             return text.copyClipPreview(limit: 160)
         case .image:
-            return "Image"
+            let textPreview = text.copyClipPreview(limit: 96)
+            return textPreview.isEmpty ? "Image" : "Image · \(textPreview)"
         }
     }
 }

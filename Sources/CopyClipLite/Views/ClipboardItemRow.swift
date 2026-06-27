@@ -13,7 +13,7 @@ struct ClipboardItemRow: View {
             Button(action: copy) {
                 HStack(alignment: .top, spacing: 10) {
                     if item.isImage {
-                        ClipboardImageThumbnail(data: item.image?.data)
+                        ClipboardImageThumbnail(data: item.image?.displayData)
                     }
 
                     VStack(alignment: .leading, spacing: 7) {

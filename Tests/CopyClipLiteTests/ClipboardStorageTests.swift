@@ -21,6 +21,7 @@ final class ClipboardStorageTests: XCTestCase {
         storage.save([ClipboardItem(text: "private value")])
 
         XCTAssertEqual(try permissions(at: directory), 0o700)
+        XCTAssertEqual(try permissions(at: storage.imageDirectoryURL), 0o700)
         XCTAssertEqual(try permissions(at: storage.fileURL), 0o600)
     }
 
@@ -54,14 +55,60 @@ final class ClipboardStorageTests: XCTestCase {
 
     func testImageItemsRoundTripThroughStorage() throws {
         let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
-        let image = ClipboardImagePayload(data: Data([0, 1, 2, 3]), width: 12, height: 34)
+        let imageData = Data([0, 1, 2, 3])
+        let thumbnailData = Data([9, 8, 7])
+        let image = ClipboardImagePayload(
+            data: imageData,
+            thumbnailData: thumbnailData,
+            width: 12,
+            height: 34,
+            contentHash: "hash"
+        )
 
         storage.save([ClipboardItem(image: image)])
 
         let loadedItem = try XCTUnwrap(storage.load().first)
         XCTAssertEqual(loadedItem.contentKind, .image)
-        XCTAssertEqual(loadedItem.image, image)
+        XCTAssertNil(loadedItem.image?.data)
+        XCTAssertEqual(storage.imageData(for: loadedItem), imageData)
+        XCTAssertEqual(loadedItem.image?.thumbnailData, thumbnailData)
+        XCTAssertNotNil(loadedItem.image?.fileName)
+        XCTAssertNotNil(loadedItem.image?.thumbnailFileName)
         XCTAssertEqual(loadedItem.previewText, "Image")
+
+        let historyText = try String(contentsOf: storage.fileURL, encoding: .utf8)
+        XCTAssertFalse(historyText.contains(imageData.base64EncodedString()))
+        XCTAssertFalse(historyText.contains(thumbnailData.base64EncodedString()))
+    }
+
+    func testLegacyInlineImageItemsMigrateToImageFilesOnLoad() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let imageData = Data([0, 1, 2, 3])
+        let thumbnailData = Data([9, 8, 7])
+        let legacyJSON = """
+        [{
+          "id":"00000000-0000-0000-0000-000000000001",
+          "contentKind":"image",
+          "image":{
+            "data":"\(imageData.base64EncodedString())",
+            "thumbnailData":"\(thumbnailData.base64EncodedString())",
+            "width":12,
+            "height":34
+          }
+        }]
+        """
+        try legacyJSON.write(to: storage.fileURL, atomically: true, encoding: .utf8)
+
+        let loadedItem = try XCTUnwrap(storage.load().first)
+
+        XCTAssertNil(loadedItem.image?.data)
+        XCTAssertEqual(storage.imageData(for: loadedItem), imageData)
+        XCTAssertEqual(loadedItem.image?.thumbnailData, thumbnailData)
+        XCTAssertEqual(loadedItem.image?.byteCount, imageData.count)
+
+        let migratedHistoryText = try String(contentsOf: storage.fileURL, encoding: .utf8)
+        XCTAssertFalse(migratedHistoryText.contains(imageData.base64EncodedString()))
+        XCTAssertFalse(migratedHistoryText.contains(thumbnailData.base64EncodedString()))
     }
 
     private func makeTemporaryDirectory() throws -> URL {

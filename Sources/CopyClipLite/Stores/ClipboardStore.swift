@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CryptoKit
 import Foundation
 
 @MainActor
@@ -226,12 +227,14 @@ final class ClipboardStore: ObservableObject {
             return
         }
 
+        let text = Self.normalizedText(pasteboard.string(forType: .string))
+
         if let image = Self.imagePayload(from: pasteboard) {
-            record(image)
+            record(image, associatedText: text)
             return
         }
 
-        guard let text = pasteboard.string(forType: .string) else {
+        guard let text else {
             return
         }
 
@@ -295,18 +298,25 @@ final class ClipboardStore: ObservableObject {
         persist()
     }
 
-    private func record(_ image: ClipboardImagePayload) {
-        guard image.data.count <= Self.maximumCapturedImageBytes else {
+    private func record(_ image: ClipboardImagePayload, associatedText: String? = nil) {
+        guard let data = image.data, data.count <= Self.maximumCapturedImageBytes else {
             return
         }
 
-        if let existingIndex = items.firstIndex(where: { $0.image?.data == image.data }) {
+        var storedImage = image
+        if storedImage.contentHash == nil {
+            storedImage.contentHash = Self.contentHash(for: data)
+        }
+
+        if let existingIndex = items.firstIndex(where: { item in
+            item.image?.contentHash == storedImage.contentHash
+        }) {
             var existing = items.remove(at: existingIndex)
             existing.lastCopiedAt = Date()
             existing.copyCount += 1
             items.insert(existing, at: 0)
         } else {
-            items.insert(ClipboardItem(image: image), at: 0)
+            items.insert(ClipboardItem(text: associatedText ?? "", image: storedImage), at: 0)
         }
 
         pruneHistory()
@@ -318,16 +328,30 @@ final class ClipboardStore: ObservableObject {
         case .text:
             pasteboard.setString(item.text, forType: .string)
         case .image:
-            guard let image = item.image else {
+            guard let imageData = storage.imageData(for: item) else {
                 return
             }
 
-            pasteboard.setData(image.data, forType: .png)
+            pasteboard.setData(imageData, forType: .png)
 
-            if let nsImage = NSImage(data: image.data), let tiffData = nsImage.tiffRepresentation {
+            if let nsImage = NSImage(data: imageData), let tiffData = nsImage.tiffRepresentation {
                 pasteboard.setData(tiffData, forType: .tiff)
             }
+
+            if !item.text.isEmpty {
+                pasteboard.setString(item.text, forType: .string)
+            }
         }
+    }
+
+    private static func normalizedText(_ text: String?) -> String? {
+        guard let text,
+              text.count <= maximumCapturedCharacters,
+              text.rangeOfCharacter(from: .whitespacesAndNewlines.inverted) != nil else {
+            return nil
+        }
+
+        return text
     }
 
     private static func imagePayload(from pasteboard: NSPasteboard) -> ClipboardImagePayload? {
@@ -369,9 +393,47 @@ final class ClipboardStore: ObservableObject {
 
         return ClipboardImagePayload(
             data: pngData,
+            thumbnailData: thumbnailPNGData(from: pngData),
             width: bitmap.pixelsWide,
-            height: bitmap.pixelsHigh
+            height: bitmap.pixelsHigh,
+            byteCount: pngData.count,
+            contentHash: contentHash(for: pngData)
         )
+    }
+
+    private static func thumbnailPNGData(from data: Data) -> Data? {
+        guard let image = NSImage(data: data), image.size.width > 0, image.size.height > 0 else {
+            return nil
+        }
+
+        let maxDimension: CGFloat = 96
+        let scale = min(maxDimension / image.size.width, maxDimension / image.size.height, 1)
+        let thumbnailSize = NSSize(
+            width: max(1, round(image.size.width * scale)),
+            height: max(1, round(image.size.height * scale))
+        )
+        let thumbnailImage = NSImage(size: thumbnailSize)
+        thumbnailImage.lockFocus()
+        image.draw(
+            in: NSRect(origin: .zero, size: thumbnailSize),
+            from: NSRect(origin: .zero, size: image.size),
+            operation: .copy,
+            fraction: 1
+        )
+        thumbnailImage.unlockFocus()
+
+        guard let tiffData = thumbnailImage.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData) else {
+            return nil
+        }
+
+        return bitmap.representation(using: .png, properties: [:])
+    }
+
+    private static func contentHash(for data: Data) -> String {
+        SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 
     private func pruneHistory(now: Date = Date()) {

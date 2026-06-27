@@ -104,10 +104,13 @@ final class ClipboardStoreTests: XCTestCase {
         store.pollPasteboardForChanges()
 
         let item = try XCTUnwrap(store.items.first)
+        let image = try XCTUnwrap(item.image)
         XCTAssertEqual(item.contentKind, .image)
-        XCTAssertEqual(item.image?.data, pngData)
-        XCTAssertEqual(item.image?.width, 3)
-        XCTAssertEqual(item.image?.height, 4)
+        XCTAssertEqual(image.data, pngData)
+        XCTAssertNotNil(image.thumbnailData)
+        XCTAssertNotNil(image.contentHash)
+        XCTAssertEqual(image.width, 3)
+        XCTAssertEqual(image.height, 4)
         XCTAssertEqual(item.previewText, "Image")
         XCTAssertEqual(store.visibleItems(matching: "image").map(\.id), [item.id])
     }
@@ -125,6 +128,7 @@ final class ClipboardStoreTests: XCTestCase {
             defaults: makeDefaults()
         )
         let item = try XCTUnwrap(store.items.first)
+        XCTAssertNil(item.image?.data)
 
         store.copy(item)
 
@@ -132,6 +136,33 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertNotNil(pasteboard.data(forType: .tiff))
         XCTAssertNil(pasteboard.string(forType: .string))
         XCTAssertEqual(store.items.first?.copyCount, 2)
+    }
+
+    func testImagePasteboardWithAssociatedTextKeepsText() throws {
+        let pasteboard = makePasteboard()
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: ClipboardStorage(appDirectory: try makeTemporaryDirectory()),
+            defaults: makeDefaults()
+        )
+        let pngData = try makePNGData(width: 4, height: 5)
+
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setData(pngData, forType: .png))
+        XCTAssertTrue(pasteboard.setString("chart caption", forType: .string))
+
+        store.pollPasteboardForChanges()
+
+        let item = try XCTUnwrap(store.items.first)
+        XCTAssertEqual(item.contentKind, .image)
+        XCTAssertEqual(item.text, "chart caption")
+        XCTAssertEqual(item.previewText, "Image · chart caption")
+        XCTAssertEqual(store.visibleItems(matching: "caption").map(\.id), [item.id])
+
+        store.copy(item)
+
+        XCTAssertEqual(pasteboard.data(forType: .png), pngData)
+        XCTAssertEqual(pasteboard.string(forType: .string), "chart caption")
     }
 
     func testClearUnpinnedOnQuitKeepsPinnedItems() throws {

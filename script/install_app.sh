@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DISPLAY_NAME="CopyClip Lite"
-BUNDLE_ID="com.local.CopyClipLite"
+APP_DISPLAY_NAME="${COPYCLIP_APP_DISPLAY_NAME:-CopyClip Lite}"
+BUNDLE_ID="${COPYCLIP_BUNDLE_ID:-com.local.CopyClipLite}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE_APP="$ROOT_DIR/dist/$APP_DISPLAY_NAME.app"
 DEST_DIR="${COPYCLIP_INSTALL_DIR:-/Applications}"

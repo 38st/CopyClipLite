@@ -61,10 +61,16 @@ The script stages the app, installs it to `/Applications/CopyClip Lite.app`, ref
 
 ## Sharing
 
-Create the share zip from the staged bundle:
+Create a validated share zip from the staged bundle:
 
 ```bash
-ditto -c -k --keepParent "dist/CopyClip Lite.app" "dist/CopyClip-Lite-macOS.zip"
+./script/package_release.sh
 ```
 
-The current local build is ad-hoc signed and intended for personal sharing, not App Store distribution.
+The script builds a release bundle, validates the bundle plist and code signature, writes `dist/CopyClip-Lite-macOS.zip`, verifies the zip, and reports the Gatekeeper assessment.
+
+By default, local builds are ad-hoc signed and intended for personal sharing, not App Store distribution. To create a Developer ID signed build for notarization, provide a signing identity:
+
+```bash
+COPYCLIP_CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./script/package_release.sh
+```

@@ -47,7 +47,7 @@ final class GlobalHotkeyController: ObservableObject {
             return
         }
 
-        var hotKeyID = EventHotKeyID(signature: Self.hotKeySignature, id: 1)
+        let hotKeyID = EventHotKeyID(signature: Self.hotKeySignature, id: 1)
         var registeredHotKey: EventHotKeyRef?
         let registerStatus = RegisterEventHotKey(
             UInt32(kVK_ANSI_V),

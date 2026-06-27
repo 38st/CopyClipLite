@@ -3,9 +3,12 @@ set -euo pipefail
 
 MODE="${1:-run}"
 APP_NAME="CopyClipLite"
-APP_DISPLAY_NAME="CopyClip Lite"
-BUNDLE_ID="com.local.CopyClipLite"
+APP_DISPLAY_NAME="${COPYCLIP_APP_DISPLAY_NAME:-CopyClip Lite}"
+BUNDLE_ID="${COPYCLIP_BUNDLE_ID:-com.local.CopyClipLite}"
+APP_VERSION="${COPYCLIP_VERSION:-1.0}"
+APP_BUILD_NUMBER="${COPYCLIP_BUILD_NUMBER:-1}"
 MIN_SYSTEM_VERSION="14.0"
+CODESIGN_IDENTITY="${COPYCLIP_CODESIGN_IDENTITY:--}"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
@@ -16,10 +19,17 @@ APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 
+CONFIGURATION="${COPYCLIP_BUILD_CONFIGURATION:-debug}"
+if [[ "$MODE" == "package" || "$MODE" == "--package" ]]; then
+  CONFIGURATION="${COPYCLIP_BUILD_CONFIGURATION:-release}"
+fi
+
+SWIFT_BUILD_ARGS=(-c "$CONFIGURATION")
+
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 
-swift build
-BUILD_BINARY="$(swift build --show-bin-path)/$APP_NAME"
+swift build "${SWIFT_BUILD_ARGS[@]}"
+BUILD_BINARY="$(swift build "${SWIFT_BUILD_ARGS[@]}" --show-bin-path)/$APP_NAME"
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_RESOURCES"
@@ -46,9 +56,9 @@ cat >"$INFO_PLIST" <<PLIST
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
-  <string>1.0</string>
+  <string>$APP_VERSION</string>
   <key>CFBundleVersion</key>
-  <string>1</string>
+  <string>$APP_BUILD_NUMBER</string>
   <key>LSApplicationCategoryType</key>
   <string>public.app-category.utilities</string>
   <key>LSUIElement</key>
@@ -61,7 +71,12 @@ cat >"$INFO_PLIST" <<PLIST
 </plist>
 PLIST
 
-codesign --force --sign - "$APP_BUNDLE" >/dev/null
+CODESIGN_ARGS=(--force --sign "$CODESIGN_IDENTITY")
+if [[ "$CODESIGN_IDENTITY" != "-" ]]; then
+  CODESIGN_ARGS+=(--options runtime --timestamp)
+fi
+
+codesign "${CODESIGN_ARGS[@]}" "$APP_BUNDLE" >/dev/null
 
 open_app() {
   /usr/bin/open -n "$APP_BUNDLE"

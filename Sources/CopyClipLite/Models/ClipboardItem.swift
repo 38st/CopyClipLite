@@ -97,12 +97,13 @@ struct ClipboardItem: Identifiable, Codable, Hashable {
     var lastCopiedAt: Date
     var isPinned: Bool
     var copyCount: Int
+    var sourceApplication: ClipboardSourceApplication?
 
     private let cachedPreview: String
     private let cachedCharacterCount: Int
 
     enum CodingKeys: String, CodingKey {
-        case id, text, contentKind, image, createdAt, lastCopiedAt, isPinned, copyCount
+        case id, text, contentKind, image, createdAt, lastCopiedAt, isPinned, copyCount, sourceApplication
     }
 
     init(
@@ -111,7 +112,8 @@ struct ClipboardItem: Identifiable, Codable, Hashable {
         createdAt: Date = Date(),
         lastCopiedAt: Date = Date(),
         isPinned: Bool = false,
-        copyCount: Int = 1
+        copyCount: Int = 1,
+        sourceApplication: ClipboardSourceApplication? = nil
     ) {
         self.id = id
         self.text = text
@@ -121,6 +123,7 @@ struct ClipboardItem: Identifiable, Codable, Hashable {
         self.lastCopiedAt = lastCopiedAt
         self.isPinned = isPinned
         self.copyCount = copyCount
+        self.sourceApplication = sourceApplication
         self.cachedPreview = text.copyClipPreview(limit: 160)
         self.cachedCharacterCount = text.count
     }
@@ -132,7 +135,8 @@ struct ClipboardItem: Identifiable, Codable, Hashable {
         createdAt: Date = Date(),
         lastCopiedAt: Date = Date(),
         isPinned: Bool = false,
-        copyCount: Int = 1
+        copyCount: Int = 1,
+        sourceApplication: ClipboardSourceApplication? = nil
     ) {
         self.id = id
         self.text = text
@@ -142,6 +146,7 @@ struct ClipboardItem: Identifiable, Codable, Hashable {
         self.lastCopiedAt = lastCopiedAt
         self.isPinned = isPinned
         self.copyCount = copyCount
+        self.sourceApplication = sourceApplication
         self.cachedPreview = Self.previewText(contentKind: .image, text: text, image: image)
         self.cachedCharacterCount = text.count
     }
@@ -158,6 +163,7 @@ struct ClipboardItem: Identifiable, Codable, Hashable {
         lastCopiedAt = try c.decodeIfPresent(Date.self, forKey: .lastCopiedAt) ?? Date()
         isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
         copyCount = try c.decodeIfPresent(Int.self, forKey: .copyCount) ?? 1
+        sourceApplication = try c.decodeIfPresent(ClipboardSourceApplication.self, forKey: .sourceApplication)
         cachedPreview = Self.previewText(contentKind: contentKind, text: text, image: image)
         cachedCharacterCount = text.count
     }
@@ -172,6 +178,7 @@ struct ClipboardItem: Identifiable, Codable, Hashable {
         try c.encode(lastCopiedAt, forKey: .lastCopiedAt)
         try c.encode(isPinned, forKey: .isPinned)
         try c.encode(copyCount, forKey: .copyCount)
+        try c.encodeIfPresent(sourceApplication, forKey: .sourceApplication)
     }
 
     var previewText: String {
@@ -185,25 +192,36 @@ struct ClipboardItem: Identifiable, Codable, Hashable {
     var searchableText: String {
         switch contentKind {
         case .text:
-            text
+            [text, sourceApplication?.name]
+                .compactMap { $0 }
+                .joined(separator: " ")
         case .image:
-            "image \(image?.dimensionsText ?? "") \(text)"
+            ["image", image?.dimensionsText, text, sourceApplication?.name]
+                .compactMap { $0 }
+                .joined(separator: " ")
         }
     }
 
     var metadataText: String {
         let copies = copyCount == 1 ? "1 copy" : "\(copyCount) copies"
+        let sourceName = sourceApplication?.name
 
         switch contentKind {
         case .text:
             let countText = cachedCharacterCount == 1 ? "1 character" : "\(cachedCharacterCount) characters"
-            return "\(countText) · \(copies)"
+            return [countText, copies, sourceName]
+                .compactMap { $0 }
+                .joined(separator: " · ")
         case .image:
             guard let image else {
-                return copies
+                return [copies, sourceName]
+                    .compactMap { $0 }
+                    .joined(separator: " · ")
             }
 
-            return "\(image.dimensionsText) · \(image.byteCountText) · \(copies)"
+            return [image.dimensionsText, image.byteCountText, copies, sourceName]
+                .compactMap { $0 }
+                .joined(separator: " · ")
         }
     }
 

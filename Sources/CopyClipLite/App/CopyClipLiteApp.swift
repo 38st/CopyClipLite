@@ -26,12 +26,17 @@ struct CopyClipLiteApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store = ClipboardStore()
     @StateObject private var loginItemController = LoginItemController()
+    @StateObject private var hotkeyController = GlobalHotkeyController()
 
     var body: some Scene {
         WindowGroup("CopyClip Lite", id: "main") {
             RootWindowView(store: store)
                 .frame(minWidth: 390, idealWidth: 420, minHeight: 560, idealHeight: 620)
                 .onAppear { appDelegate.store = store }
+                .background(
+                    OpenSearchHotkeyInstaller(hotkeyController: hotkeyController)
+                        .frame(width: 0, height: 0)
+                )
         }
         .defaultSize(width: 420, height: 620)
 
@@ -42,7 +47,27 @@ struct CopyClipLiteApp: App {
         .menuBarExtraStyle(.window)
 
         Settings {
-            SettingsView(store: store, loginItem: loginItemController)
+            SettingsView(
+                store: store,
+                loginItem: loginItemController,
+                hotkeyController: hotkeyController
+            )
         }
+    }
+}
+
+private struct OpenSearchHotkeyInstaller: View {
+    @ObservedObject var hotkeyController: GlobalHotkeyController
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Color.clear
+            .onAppear {
+                hotkeyController.action = {
+                    openWindow(id: "main")
+                    NSApplication.shared.activate(ignoringOtherApps: true)
+                    NotificationCenter.default.post(name: .copyClipFocusSearch, object: nil)
+                }
+            }
     }
 }

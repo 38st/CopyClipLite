@@ -111,6 +111,35 @@ final class ClipboardStorageTests: XCTestCase {
         XCTAssertFalse(migratedHistoryText.contains(thumbnailData.base64EncodedString()))
     }
 
+    func testExportEmbedsExternalizedImageData() throws {
+        let directory = try makeTemporaryDirectory()
+        let storage = ClipboardStorage(appDirectory: directory)
+        let exportURL = directory.appendingPathComponent("export.json")
+        let imageData = Data([0, 1, 2, 3])
+        let thumbnailData = Data([9, 8, 7])
+        let image = ClipboardImagePayload(
+            data: imageData,
+            thumbnailData: thumbnailData,
+            width: 12,
+            height: 34,
+            contentHash: "hash"
+        )
+        storage.save([ClipboardItem(image: image)])
+        let loadedItems = storage.load()
+
+        try storage.export(loadedItems, to: exportURL)
+
+        let exportText = try String(contentsOf: exportURL, encoding: .utf8)
+        XCTAssertTrue(exportText.contains(imageData.base64EncodedString()))
+        XCTAssertTrue(exportText.contains(thumbnailData.base64EncodedString()))
+
+        let importedItem = try XCTUnwrap(storage.importItems(from: exportURL).first)
+        XCTAssertEqual(importedItem.image?.data, imageData)
+        XCTAssertEqual(importedItem.image?.thumbnailData, thumbnailData)
+        XCTAssertNil(importedItem.image?.fileName)
+        XCTAssertNil(importedItem.image?.thumbnailFileName)
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("CopyClipLiteTests-\(UUID().uuidString)", isDirectory: true)

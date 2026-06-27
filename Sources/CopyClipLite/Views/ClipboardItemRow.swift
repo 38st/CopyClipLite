@@ -4,9 +4,11 @@ import SwiftUI
 struct ClipboardItemRow: View {
     let item: ClipboardItem
     let isCopied: Bool
+    let isSelected: Bool
     let copy: () -> Void
     let togglePin: () -> Void
     let delete: () -> Void
+    let ignoreApplication: (() -> Void)?
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -70,18 +72,37 @@ struct ClipboardItemRow: View {
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.78))
+                .fill(backgroundColor)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.45))
+                .strokeBorder(borderColor)
         )
         .contextMenu {
             Button("Copy", action: copy)
             Button(item.isPinned ? "Unpin" : "Pin", action: togglePin)
+            if let ignoreApplication, let sourceApplication = item.sourceApplication {
+                Button("Ignore \(sourceApplication.name)", action: ignoreApplication)
+            }
             Divider()
             Button("Delete", role: .destructive, action: delete)
         }
+    }
+
+    private var backgroundColor: Color {
+        if isSelected {
+            return Color.accentColor.opacity(0.16)
+        }
+
+        return Color(nsColor: .controlBackgroundColor).opacity(0.78)
+    }
+
+    private var borderColor: Color {
+        if isSelected {
+            return Color.accentColor.opacity(0.62)
+        }
+
+        return Color(nsColor: .separatorColor).opacity(0.45)
     }
 }
 

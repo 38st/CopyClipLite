@@ -5,9 +5,12 @@ struct ClipboardPanelView: View {
     @ObservedObject var store: ClipboardStore
     @Environment(\.openWindow) private var openWindow
     @State private var searchText = ""
+    @State private var contentFilter: ClipboardContentFilter = .all
+    @State private var selectedItemID: ClipboardItem.ID?
+    @FocusState private var isSearchFocused: Bool
 
     var body: some View {
-        let visible = store.visibleItems(matching: searchText)
+        let visible = currentVisibleItems
         let pinned = visible.filter(\.isPinned)
         let recent = visible.filter { !$0.isPinned }
 
@@ -16,7 +19,10 @@ struct ClipboardPanelView: View {
 
             Divider()
 
-            searchField
+            VStack(spacing: 8) {
+                searchField
+                filterPicker
+            }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
 
@@ -27,6 +33,27 @@ struct ClipboardPanelView: View {
             footer
         }
         .background(.regularMaterial)
+        .background(
+            ClipboardPanelKeyboardBridge { action in
+                handleKeyAction(action)
+            }
+            .frame(width: 0, height: 0)
+        )
+        .onAppear {
+            focusSearch()
+            reconcileSelection()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .copyClipFocusSearch)) { _ in
+            focusSearch()
+            reconcileSelection()
+        }
+        .onChange(of: visible.map(\.id)) { _, _ in
+            reconcileSelection()
+        }
+    }
+
+    private var currentVisibleItems: [ClipboardItem] {
+        store.visibleItems(matching: searchText, filter: contentFilter)
     }
 
     private var header: some View {
@@ -40,7 +67,7 @@ struct ClipboardPanelView: View {
                 Text("CopyClip Lite")
                     .font(.headline)
 
-                Text(store.isMonitoringEnabled ? "Monitoring clipboard" : "Paused")
+                Text(store.monitoringStatusText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -50,6 +77,7 @@ struct ClipboardPanelView: View {
             Button {
                 openWindow(id: "main")
                 NSApplication.shared.activate(ignoringOtherApps: true)
+                NotificationCenter.default.post(name: .copyClipFocusSearch, object: nil)
             } label: {
                 Image(systemName: "macwindow")
                     .frame(width: 22, height: 22)
@@ -57,14 +85,30 @@ struct ClipboardPanelView: View {
             .buttonStyle(.borderless)
             .help("Open window")
 
-            Button {
-                store.isMonitoringEnabled.toggle()
+            Menu {
+                if store.isMonitoringEnabled {
+                    Button("Pause") {
+                        store.setMonitoringEnabled(false)
+                    }
+                } else {
+                    Button("Resume") {
+                        store.setMonitoringEnabled(true)
+                    }
+                }
+
+                Divider()
+
+                ForEach(ClipboardPauseDuration.allCases) { duration in
+                    Button("Pause \(duration.title)") {
+                        store.pauseMonitoring(for: duration)
+                    }
+                }
             } label: {
                 Image(systemName: store.isMonitoringEnabled ? "pause.circle" : "play.circle")
                     .frame(width: 22, height: 22)
             }
             .buttonStyle(.borderless)
-            .help(store.isMonitoringEnabled ? "Pause monitoring" : "Resume monitoring")
+            .help("Monitoring")
 
             SettingsLink {
                 Image(systemName: "gearshape")
@@ -84,10 +128,9 @@ struct ClipboardPanelView: View {
 
             TextField("Search history", text: $searchText)
                 .textFieldStyle(.plain)
+                .focused($isSearchFocused)
                 .onSubmit {
-                    if let firstItem = store.visibleItems(matching: searchText).first {
-                        store.copy(firstItem)
-                    }
+                    _ = copySelectedItem()
                 }
 
             if !searchText.isEmpty {
@@ -109,10 +152,20 @@ struct ClipboardPanelView: View {
         )
     }
 
+    private var filterPicker: some View {
+        Picker("Filter", selection: $contentFilter) {
+            ForEach(ClipboardContentFilter.allCases) { filter in
+                Text(filter.title).tag(filter)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+    }
+
     @ViewBuilder
     private func content(visible: [ClipboardItem], pinned: [ClipboardItem], recent: [ClipboardItem]) -> some View {
         if visible.isEmpty {
-            EmptyHistoryView(isSearching: !searchText.isEmpty)
+            EmptyHistoryView(isSearching: !searchText.isEmpty || contentFilter != .all)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollView {
@@ -121,13 +174,7 @@ struct ClipboardPanelView: View {
                         SectionHeader(title: "Pinned")
 
                         ForEach(pinned) { item in
-                            ClipboardItemRow(
-                                item: item,
-                                isCopied: store.lastCopiedID == item.id,
-                                copy: { store.copy(item) },
-                                togglePin: { store.togglePin(item) },
-                                delete: { store.delete(item) }
-                            )
+                            row(for: item)
                         }
                     }
 
@@ -135,13 +182,7 @@ struct ClipboardPanelView: View {
                         SectionHeader(title: pinned.isEmpty ? "Recent" : "History")
 
                         ForEach(recent) { item in
-                            ClipboardItemRow(
-                                item: item,
-                                isCopied: store.lastCopiedID == item.id,
-                                copy: { store.copy(item) },
-                                togglePin: { store.togglePin(item) },
-                                delete: { store.delete(item) }
-                            )
+                            row(for: item)
                         }
                     }
                 }
@@ -149,6 +190,28 @@ struct ClipboardPanelView: View {
                 .padding(.bottom, 12)
             }
         }
+    }
+
+    private func row(for item: ClipboardItem) -> some View {
+        ClipboardItemRow(
+            item: item,
+            isCopied: store.lastCopiedID == item.id,
+            isSelected: selectedItemID == item.id,
+            copy: {
+                selectedItemID = item.id
+                store.copy(item)
+            },
+            togglePin: {
+                selectedItemID = item.id
+                store.togglePin(item)
+            },
+            delete: {
+                store.delete(item)
+                selectedItemID = nil
+                reconcileSelection()
+            },
+            ignoreApplication: ignoreApplicationAction(for: item)
+        )
     }
 
     private var footer: some View {
@@ -177,6 +240,108 @@ struct ClipboardPanelView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
+    }
+
+    private func ignoreApplicationAction(for item: ClipboardItem) -> (() -> Void)? {
+        guard let application = item.sourceApplication,
+              !store.isApplicationIgnored(application) else {
+            return nil
+        }
+
+        return {
+            store.addIgnoredApplication(application)
+        }
+    }
+
+    private func handleKeyAction(_ action: ClipboardPanelKeyAction) -> Bool {
+        switch action {
+        case .moveUp:
+            return moveSelection(by: -1)
+        case .moveDown:
+            return moveSelection(by: 1)
+        case .copySelected:
+            return copySelectedItem()
+        case .deleteSelected:
+            return deleteSelectedItem()
+        case .togglePinSelected:
+            return togglePinSelectedItem()
+        case .focusSearch:
+            focusSearch()
+            return true
+        }
+    }
+
+    private func moveSelection(by offset: Int) -> Bool {
+        let visibleItems = currentVisibleItems
+        guard !visibleItems.isEmpty else {
+            selectedItemID = nil
+            return false
+        }
+
+        guard let currentSelectionID = selectedItemID,
+              let selectedIndex = visibleItems.firstIndex(where: { $0.id == currentSelectionID }) else {
+            selectedItemID = visibleItems.first?.id
+            return true
+        }
+
+        let nextIndex = min(max(selectedIndex + offset, 0), visibleItems.count - 1)
+        selectedItemID = visibleItems[nextIndex].id
+        return true
+    }
+
+    private func copySelectedItem() -> Bool {
+        guard let item = selectedItem() ?? currentVisibleItems.first else {
+            return false
+        }
+
+        selectedItemID = item.id
+        store.copy(item)
+        return true
+    }
+
+    private func deleteSelectedItem() -> Bool {
+        guard let item = selectedItem() else {
+            return false
+        }
+
+        store.delete(item)
+        selectedItemID = nil
+        reconcileSelection()
+        return true
+    }
+
+    private func togglePinSelectedItem() -> Bool {
+        guard let item = selectedItem() else {
+            return false
+        }
+
+        store.togglePin(item)
+        return true
+    }
+
+    private func selectedItem() -> ClipboardItem? {
+        guard let selectedItemID else {
+            return nil
+        }
+
+        return currentVisibleItems.first { $0.id == selectedItemID }
+    }
+
+    private func reconcileSelection() {
+        let visibleItems = currentVisibleItems
+
+        if let selectedItemID,
+           visibleItems.contains(where: { $0.id == selectedItemID }) {
+            return
+        }
+
+        selectedItemID = visibleItems.first?.id
+    }
+
+    private func focusSearch() {
+        DispatchQueue.main.async {
+            isSearchFocused = true
+        }
     }
 }
 

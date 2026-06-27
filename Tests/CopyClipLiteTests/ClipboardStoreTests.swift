@@ -165,6 +165,95 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "chart caption")
     }
 
+    func testPollingStoresSourceApplicationMetadata() throws {
+        let pasteboard = makePasteboard()
+        let sourceApplication = ClipboardSourceApplication(
+            bundleIdentifier: "com.example.Notes",
+            name: "Notes"
+        )
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: ClipboardStorage(appDirectory: try makeTemporaryDirectory()),
+            defaults: makeDefaults(),
+            sourceApplicationProvider: { sourceApplication }
+        )
+
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("note text", forType: .string))
+
+        store.pollPasteboardForChanges()
+
+        let item = try XCTUnwrap(store.items.first)
+        XCTAssertEqual(item.sourceApplication, sourceApplication)
+        XCTAssertEqual(store.visibleItems(matching: "Notes").map(\.id), [item.id])
+    }
+
+    func testIgnoredSourceApplicationIsNotCaptured() throws {
+        let pasteboard = makePasteboard()
+        let sourceApplication = ClipboardSourceApplication(
+            bundleIdentifier: "com.example.Secret",
+            name: "Secret"
+        )
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: ClipboardStorage(appDirectory: try makeTemporaryDirectory()),
+            defaults: makeDefaults(),
+            sourceApplicationProvider: { sourceApplication }
+        )
+        store.addIgnoredApplication(sourceApplication)
+
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("private value", forType: .string))
+
+        store.pollPasteboardForChanges()
+
+        XCTAssertTrue(store.items.isEmpty)
+    }
+
+    func testVisibleItemsCanFilterByContentKindAndPinnedState() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let image = ClipboardImagePayload(data: Data([0, 1, 2, 3]), width: 12, height: 34)
+        storage.save([
+            ClipboardItem(text: "plain text"),
+            ClipboardItem(text: "pinned text", isPinned: true),
+            ClipboardItem(image: image)
+        ])
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: storage,
+            defaults: makeDefaults()
+        )
+
+        XCTAssertEqual(store.visibleItems(matching: "", filter: .text).map(\.text).sorted(), [
+            "pinned text",
+            "plain text"
+        ])
+        XCTAssertEqual(store.visibleItems(matching: "", filter: .images).count, 1)
+        XCTAssertEqual(store.visibleItems(matching: "", filter: .pinned).map(\.text), ["pinned text"])
+    }
+
+    func testPauseMonitoringPersistsResumeDate() throws {
+        let defaults = makeDefaults()
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: ClipboardStorage(appDirectory: try makeTemporaryDirectory()),
+            defaults: defaults
+        )
+
+        store.pauseMonitoring(for: .fiveMinutes)
+
+        XCTAssertFalse(store.isMonitoringEnabled)
+        let pausedUntil = try XCTUnwrap(store.monitoringPausedUntil)
+        XCTAssertGreaterThan(pausedUntil, Date())
+        XCTAssertEqual(defaults.object(forKey: "monitoringPausedUntil") as? Date, pausedUntil)
+
+        store.setMonitoringEnabled(true)
+
+        XCTAssertTrue(store.isMonitoringEnabled)
+        XCTAssertNil(store.monitoringPausedUntil)
+        XCTAssertNil(defaults.object(forKey: "monitoringPausedUntil"))
+    }
+
     func testClearUnpinnedOnQuitKeepsPinnedItems() throws {
         let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
         let defaults = makeDefaults()

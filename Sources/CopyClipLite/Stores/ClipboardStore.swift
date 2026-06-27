@@ -11,6 +11,8 @@ final class ClipboardStore: ObservableObject {
         static let keepPinnedOnClear = "keepPinnedOnClear"
         static let clearUnpinnedOnQuit = "clearUnpinnedOnQuit"
         static let monitoringEnabled = "monitoringEnabled"
+        static let monitoringPausedUntil = "monitoringPausedUntil"
+        static let ignoredApplications = "ignoredApplications"
     }
 
     private static let maximumCapturedCharacters = 20_000
@@ -44,7 +46,7 @@ final class ClipboardStore: ObservableObject {
             defaults.set(clearUnpinnedOnQuit, forKey: DefaultsKey.clearUnpinnedOnQuit)
         }
     }
-    @Published var isMonitoringEnabled: Bool {
+    @Published private(set) var isMonitoringEnabled: Bool {
         didSet {
             defaults.set(isMonitoringEnabled, forKey: DefaultsKey.monitoringEnabled)
             if isMonitoringEnabled {
@@ -55,15 +57,19 @@ final class ClipboardStore: ObservableObject {
             }
         }
     }
+    @Published private(set) var monitoringPausedUntil: Date?
+    @Published private(set) var ignoredApplications: [ClipboardSourceApplication]
     @Published private(set) var lastCopiedID: ClipboardItem.ID?
 
     private let pasteboard: NSPasteboard
     private let storage: ClipboardStorage
     private let defaults: UserDefaults
+    private let sourceApplicationProvider: () -> ClipboardSourceApplication?
     private var lastPasteboardChangeCount: Int
     private var timer: Timer?
     private var pruneTimer: Timer?
     private var clearCopiedIndicatorTask: Task<Void, Never>?
+    private var monitoringResumeTask: Task<Void, Never>?
     private var persistTask: Task<Void, Never>?
 
     var storageLocation: URL {
@@ -81,14 +87,29 @@ final class ClipboardStore: ObservableObject {
         return "\(unpinnedCount)/\(historyLimit) unpinned"
     }
 
+    var monitoringStatusText: String {
+        if isMonitoringEnabled {
+            return "Monitoring clipboard"
+        }
+
+        if let monitoringPausedUntil, monitoringPausedUntil > Date() {
+            let time = Self.pauseTimeFormatter.string(from: monitoringPausedUntil)
+            return "Paused until \(time)"
+        }
+
+        return "Paused"
+    }
+
     init(
         pasteboard: NSPasteboard = .general,
         storage: ClipboardStorage = ClipboardStorage(),
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        sourceApplicationProvider: @escaping () -> ClipboardSourceApplication? = ClipboardSourceApplication.frontmost
     ) {
         self.pasteboard = pasteboard
         self.storage = storage
         self.defaults = defaults
+        self.sourceApplicationProvider = sourceApplicationProvider
         self.items = storage.load().sorted { $0.lastCopiedAt > $1.lastCopiedAt }
         self.historyLimit = defaults.object(forKey: DefaultsKey.historyLimit) as? Int
             ?? Self.defaultHistoryLimit
@@ -99,8 +120,20 @@ final class ClipboardStore: ObservableObject {
             ?? true
         self.clearUnpinnedOnQuit = defaults.object(forKey: DefaultsKey.clearUnpinnedOnQuit) as? Bool
             ?? false
-        self.isMonitoringEnabled = defaults.object(forKey: DefaultsKey.monitoringEnabled) as? Bool
+        self.ignoredApplications = Self.loadIgnoredApplications(from: defaults)
+        let storedMonitoringEnabled = defaults.object(forKey: DefaultsKey.monitoringEnabled) as? Bool
             ?? true
+        let storedPausedUntil = defaults.object(forKey: DefaultsKey.monitoringPausedUntil) as? Date
+        if let storedPausedUntil, storedPausedUntil > Date() {
+            self.monitoringPausedUntil = storedPausedUntil
+            self.isMonitoringEnabled = false
+        } else {
+            self.monitoringPausedUntil = nil
+            self.isMonitoringEnabled = storedMonitoringEnabled
+            if storedPausedUntil != nil {
+                defaults.removeObject(forKey: DefaultsKey.monitoringPausedUntil)
+            }
+        }
         self.lastPasteboardChangeCount = pasteboard.changeCount
 
         let oldItems = items
@@ -108,7 +141,10 @@ final class ClipboardStore: ObservableObject {
         if items != oldItems {
             persist()
         }
-        startMonitoring()
+        if isMonitoringEnabled {
+            startMonitoring()
+        }
+        scheduleMonitoringResumeIfNeeded()
         startPeriodicPruning()
     }
 
@@ -116,16 +152,18 @@ final class ClipboardStore: ObservableObject {
         timer?.invalidate()
         pruneTimer?.invalidate()
         clearCopiedIndicatorTask?.cancel()
+        monitoringResumeTask?.cancel()
         persistTask?.cancel()
     }
 
-    func visibleItems(matching query: String) -> [ClipboardItem] {
+    func visibleItems(matching query: String, filter: ClipboardContentFilter = .all) -> [ClipboardItem] {
+        let filteredItems = items.filter { filter.matches($0) }
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedQuery.isEmpty else {
-            return items
+            return filteredItems
         }
 
-        return items.filter { item in
+        return filteredItems.filter { item in
             item.searchableText.localizedCaseInsensitiveContains(trimmedQuery)
         }
     }
@@ -135,6 +173,59 @@ final class ClipboardStore: ObservableObject {
         defaults.set(historyLimit, forKey: DefaultsKey.historyLimit)
         pruneHistory()
         persist()
+    }
+
+    func setMonitoringEnabled(_ enabled: Bool) {
+        clearMonitoringPause()
+        isMonitoringEnabled = enabled
+    }
+
+    func pauseMonitoring(for duration: ClipboardPauseDuration) {
+        let until = duration.resumeDate()
+        monitoringPausedUntil = until
+        defaults.set(until, forKey: DefaultsKey.monitoringPausedUntil)
+        isMonitoringEnabled = false
+        scheduleMonitoringResumeIfNeeded()
+    }
+
+    func addIgnoredApplication(_ application: ClipboardSourceApplication) {
+        if let ownBundleIdentifier = Bundle.main.bundleIdentifier,
+           application.bundleIdentifier == ownBundleIdentifier {
+            return
+        }
+
+        guard !ignoredApplications.contains(where: { $0.bundleIdentifier == application.bundleIdentifier }) else {
+            return
+        }
+
+        ignoredApplications.append(application)
+        ignoredApplications.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        persistIgnoredApplications()
+    }
+
+    func removeIgnoredApplication(_ application: ClipboardSourceApplication) {
+        ignoredApplications.removeAll { $0.bundleIdentifier == application.bundleIdentifier }
+        persistIgnoredApplications()
+    }
+
+    func isApplicationIgnored(_ application: ClipboardSourceApplication?) -> Bool {
+        guard let application else {
+            return false
+        }
+
+        return ignoredApplications.contains { $0.bundleIdentifier == application.bundleIdentifier }
+    }
+
+    func exportHistory(to url: URL) throws {
+        flushPendingPersist()
+        try storage.export(items, to: url)
+    }
+
+    func importHistory(from url: URL) throws {
+        items = try storage.importItems(from: url)
+            .sorted { $0.lastCopiedAt > $1.lastCopiedAt }
+        pruneHistory()
+        flushPendingPersist()
     }
 
     func copy(_ item: ClipboardItem) {
@@ -227,10 +318,15 @@ final class ClipboardStore: ObservableObject {
             return
         }
 
+        let sourceApplication = sourceApplicationProvider()
+        guard !isApplicationIgnored(sourceApplication) else {
+            return
+        }
+
         let text = Self.normalizedText(pasteboard.string(forType: .string))
 
         if let image = Self.imagePayload(from: pasteboard) {
-            record(image, associatedText: text)
+            record(image, associatedText: text, sourceApplication: sourceApplication)
             return
         }
 
@@ -238,7 +334,7 @@ final class ClipboardStore: ObservableObject {
             return
         }
 
-        record(text)
+        record(text, sourceApplication: sourceApplication)
     }
 
     private func shouldIgnoreCurrentPasteboard() -> Bool {
@@ -276,7 +372,7 @@ final class ClipboardStore: ObservableObject {
         flushPendingPersist()
     }
 
-    private func record(_ text: String) {
+    private func record(_ text: String, sourceApplication: ClipboardSourceApplication? = nil) {
         guard text.count <= Self.maximumCapturedCharacters else {
             return
         }
@@ -289,16 +385,21 @@ final class ClipboardStore: ObservableObject {
             var existing = items.remove(at: existingIndex)
             existing.lastCopiedAt = Date()
             existing.copyCount += 1
+            existing.sourceApplication = sourceApplication ?? existing.sourceApplication
             items.insert(existing, at: 0)
         } else {
-            items.insert(ClipboardItem(text: text), at: 0)
+            items.insert(ClipboardItem(text: text, sourceApplication: sourceApplication), at: 0)
         }
 
         pruneHistory()
         persist()
     }
 
-    private func record(_ image: ClipboardImagePayload, associatedText: String? = nil) {
+    private func record(
+        _ image: ClipboardImagePayload,
+        associatedText: String? = nil,
+        sourceApplication: ClipboardSourceApplication? = nil
+    ) {
         guard let data = image.data, data.count <= Self.maximumCapturedImageBytes else {
             return
         }
@@ -314,9 +415,17 @@ final class ClipboardStore: ObservableObject {
             var existing = items.remove(at: existingIndex)
             existing.lastCopiedAt = Date()
             existing.copyCount += 1
+            existing.sourceApplication = sourceApplication ?? existing.sourceApplication
             items.insert(existing, at: 0)
         } else {
-            items.insert(ClipboardItem(text: associatedText ?? "", image: storedImage), at: 0)
+            items.insert(
+                ClipboardItem(
+                    text: associatedText ?? "",
+                    image: storedImage,
+                    sourceApplication: sourceApplication
+                ),
+                at: 0
+            )
         }
 
         pruneHistory()
@@ -435,6 +544,68 @@ final class ClipboardStore: ObservableObject {
             .map { String(format: "%02x", $0) }
             .joined()
     }
+
+    private func clearMonitoringPause() {
+        monitoringResumeTask?.cancel()
+        monitoringResumeTask = nil
+        monitoringPausedUntil = nil
+        defaults.removeObject(forKey: DefaultsKey.monitoringPausedUntil)
+    }
+
+    private func scheduleMonitoringResumeIfNeeded() {
+        monitoringResumeTask?.cancel()
+        monitoringResumeTask = nil
+
+        guard let monitoringPausedUntil else {
+            return
+        }
+
+        let delay = monitoringPausedUntil.timeIntervalSinceNow
+        guard delay > 0 else {
+            clearMonitoringPause()
+            isMonitoringEnabled = true
+            return
+        }
+
+        monitoringResumeTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            guard let self,
+                  let pausedUntil = self.monitoringPausedUntil,
+                  pausedUntil <= Date() else {
+                return
+            }
+
+            self.clearMonitoringPause()
+            self.isMonitoringEnabled = true
+        }
+    }
+
+    private func persistIgnoredApplications() {
+        guard let data = try? JSONEncoder().encode(ignoredApplications) else {
+            return
+        }
+
+        defaults.set(data, forKey: DefaultsKey.ignoredApplications)
+    }
+
+    private static func loadIgnoredApplications(from defaults: UserDefaults) -> [ClipboardSourceApplication] {
+        guard let data = defaults.data(forKey: DefaultsKey.ignoredApplications),
+              let applications = try? JSONDecoder().decode([ClipboardSourceApplication].self, from: data) else {
+            return []
+        }
+
+        return applications.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
+    private static let pauseTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = .none
+        return formatter
+    }()
 
     private func pruneHistory(now: Date = Date()) {
         removeExpiredUnpinnedItems(now: now)

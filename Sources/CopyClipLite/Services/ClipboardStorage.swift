@@ -74,6 +74,21 @@ struct ClipboardStorage {
         return try? Data(contentsOf: imageDirectoryURL.appendingPathComponent(fileName))
     }
 
+    func export(_ items: [ClipboardItem], to url: URL) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+
+        let portableItems = items.map(portableItem)
+        let data = try encoder.encode(portableItems)
+        try data.write(to: url, options: [.atomic])
+        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    func importItems(from url: URL) throws -> [ClipboardItem] {
+        let data = try Data(contentsOf: url)
+        return try JSONDecoder().decode([ClipboardItem].self, from: data)
+    }
+
     @discardableResult
     private func writeHistory(_ items: [ClipboardItem]) -> Bool {
         let encoder = JSONEncoder()
@@ -152,6 +167,27 @@ struct ClipboardStorage {
 
             items[index].image = image
         }
+    }
+
+    private func portableItem(_ item: ClipboardItem) -> ClipboardItem {
+        guard var image = item.image else {
+            return item
+        }
+
+        var portable = item
+        image.data = image.data ?? imageData(for: item)
+
+        if image.thumbnailData == nil,
+           let thumbnailFileName = image.thumbnailFileName {
+            image.thumbnailData = try? Data(
+                contentsOf: imageDirectoryURL.appendingPathComponent(thumbnailFileName)
+            )
+        }
+
+        image.fileName = nil
+        image.thumbnailFileName = nil
+        portable.image = image
+        return portable
     }
 
     private func writeImageData(_ data: Data, to url: URL) -> Bool {

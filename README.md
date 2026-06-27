@@ -5,13 +5,18 @@ CopyClip Lite is a lightweight native macOS clipboard history utility. It runs f
 ## Features
 
 - Menu bar panel with searchable clipboard history
-- Text and image clipboard capture with image thumbnails
+- Text and image clipboard capture with image thumbnails and lightweight on-disk image files
 - One-click copy back to the pasteboard
-- Pin, delete, clear, pause, and quit controls
+- Keyboard navigation with arrow keys and Return to copy the selected clip
+- Global Option-Command-V hotkey to open clipboard search
+- Pin, delete, clear, timed pause, and quit controls
+- Quick filters for all clips, text, images, and pinned items
 - JSON persistence with a configurable unpinned history limit
 - Auto-clear options for unpinned clips: 24 hours, 7 days, 30 days, or never
 - Pinned clips are preserved until manually deleted or cleared
 - Optional clear of unpinned history when quitting
+- App ignore list for skipping future clips from selected apps
+- History export and import
 - Launch at Login setting for menu-bar startup
 - Native macOS app bundle with Finder, Spotlight, Launchpad, and menu-bar access
 - First-run welcome window
@@ -24,6 +29,12 @@ History is stored at:
 
 ```text
 ~/Library/Application Support/CopyClipLite/clipboard-history.json
+```
+
+Image files are stored locally under:
+
+```text
+~/Library/Application Support/CopyClipLite/Images
 ```
 
 By default, CopyClip Lite keeps up to 50 unpinned clips and auto-clears unpinned clips after 7 days. Pinned clips never auto-clear.

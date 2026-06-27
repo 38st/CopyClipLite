@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ClipboardItemRow: View {
@@ -10,31 +11,38 @@ struct ClipboardItemRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Button(action: copy) {
-                VStack(alignment: .leading, spacing: 7) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(item.previewText)
-                            .font(.callout)
-                            .foregroundStyle(.primary)
-                            .lineLimit(2)
-                            .multilineTextAlignment(.leading)
+                HStack(alignment: .top, spacing: 10) {
+                    if item.isImage {
+                        ClipboardImageThumbnail(data: item.image?.data)
+                    }
 
-                        if isCopied {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(.caption)
-                                .foregroundStyle(.green)
+                    VStack(alignment: .leading, spacing: 7) {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(item.previewText)
+                                .font(.callout)
+                                .foregroundStyle(.primary)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+
+                            if isCopied {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.caption)
+                                    .foregroundStyle(.green)
+                            }
                         }
+
+                        HStack(spacing: 6) {
+                            Text(item.metadataText)
+
+                            Text("·")
+
+                            Text(item.lastCopiedDescription)
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                     }
-
-                    HStack(spacing: 6) {
-                        Text(item.metadataText)
-
-                        Text("·")
-
-                        Text(item.lastCopiedDescription)
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
@@ -74,5 +82,40 @@ struct ClipboardItemRow: View {
             Divider()
             Button("Delete", role: .destructive, action: delete)
         }
+    }
+}
+
+private struct ClipboardImageThumbnail: View {
+    let data: Data?
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color(nsColor: .separatorColor).opacity(0.2))
+
+            if let nsImage {
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: "photo")
+                    .font(.system(size: 18))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 52, height: 52)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.55))
+        )
+    }
+
+    private var nsImage: NSImage? {
+        guard let data else {
+            return nil
+        }
+
+        return NSImage(data: data)
     }
 }

@@ -1,10 +1,11 @@
 # CopyClip Lite
 
-CopyClip Lite is a lightweight native macOS clipboard history utility. It runs from the menu bar without a Dock icon, watches text copied to the system pasteboard, and keeps a small searchable history in Application Support.
+CopyClip Lite is a lightweight native macOS clipboard history utility. It runs from the menu bar without a Dock icon, watches text and images copied to the system pasteboard, and keeps a small searchable history in Application Support.
 
 ## Features
 
 - Menu bar panel with searchable clipboard history
+- Text and image clipboard capture with image thumbnails
 - One-click copy back to the pasteboard
 - Pin, delete, clear, pause, and quit controls
 - JSON persistence with a configurable unpinned history limit

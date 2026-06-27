@@ -13,6 +13,7 @@ final class ClipboardStore: ObservableObject {
     }
 
     private static let maximumCapturedCharacters = 20_000
+    private static let maximumCapturedImageBytes = 10 * 1024 * 1024
     private static let defaultHistoryLimit = 50
     private static let pollInterval: TimeInterval = 1.5
     private static let pruneInterval: TimeInterval = 15 * 60
@@ -124,7 +125,7 @@ final class ClipboardStore: ObservableObject {
         }
 
         return items.filter { item in
-            item.text.localizedCaseInsensitiveContains(trimmedQuery)
+            item.searchableText.localizedCaseInsensitiveContains(trimmedQuery)
         }
     }
 
@@ -146,7 +147,7 @@ final class ClipboardStore: ObservableObject {
         items.insert(updated, at: 0)
 
         pasteboard.clearContents()
-        pasteboard.setString(updated.text, forType: .string)
+        writeToPasteboard(updated)
         lastPasteboardChangeCount = pasteboard.changeCount
         lastCopiedID = updated.id
 
@@ -186,7 +187,7 @@ final class ClipboardStore: ObservableObject {
 
         let timer = Timer(timeInterval: Self.pollInterval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.pollPasteboard()
+                self?.pollPasteboardForChanges()
             }
         }
 
@@ -212,7 +213,7 @@ final class ClipboardStore: ObservableObject {
         self.pruneTimer = timer
     }
 
-    private func pollPasteboard() {
+    func pollPasteboardForChanges() {
         let currentChangeCount = pasteboard.changeCount
 
         guard currentChangeCount != lastPasteboardChangeCount else {
@@ -222,6 +223,11 @@ final class ClipboardStore: ObservableObject {
         lastPasteboardChangeCount = currentChangeCount
 
         guard !shouldIgnoreCurrentPasteboard() else {
+            return
+        }
+
+        if let image = Self.imagePayload(from: pasteboard) {
+            record(image)
             return
         }
 
@@ -287,6 +293,85 @@ final class ClipboardStore: ObservableObject {
 
         pruneHistory()
         persist()
+    }
+
+    private func record(_ image: ClipboardImagePayload) {
+        guard image.data.count <= Self.maximumCapturedImageBytes else {
+            return
+        }
+
+        if let existingIndex = items.firstIndex(where: { $0.image?.data == image.data }) {
+            var existing = items.remove(at: existingIndex)
+            existing.lastCopiedAt = Date()
+            existing.copyCount += 1
+            items.insert(existing, at: 0)
+        } else {
+            items.insert(ClipboardItem(image: image), at: 0)
+        }
+
+        pruneHistory()
+        persist()
+    }
+
+    private func writeToPasteboard(_ item: ClipboardItem) {
+        switch item.contentKind {
+        case .text:
+            pasteboard.setString(item.text, forType: .string)
+        case .image:
+            guard let image = item.image else {
+                return
+            }
+
+            pasteboard.setData(image.data, forType: .png)
+
+            if let nsImage = NSImage(data: image.data), let tiffData = nsImage.tiffRepresentation {
+                pasteboard.setData(tiffData, forType: .tiff)
+            }
+        }
+    }
+
+    private static func imagePayload(from pasteboard: NSPasteboard) -> ClipboardImagePayload? {
+        if let data = pasteboard.data(forType: .png),
+           let image = imagePayload(from: data, preservePNGData: true) {
+            return image
+        }
+
+        if let data = pasteboard.data(forType: .tiff),
+           let image = imagePayload(from: data, preservePNGData: false) {
+            return image
+        }
+
+        guard let image = NSImage(pasteboard: pasteboard), let tiffData = image.tiffRepresentation else {
+            return nil
+        }
+
+        return imagePayload(from: tiffData, preservePNGData: false)
+    }
+
+    private static func imagePayload(from data: Data, preservePNGData: Bool) -> ClipboardImagePayload? {
+        guard let bitmap = NSBitmapImageRep(data: data) else {
+            return nil
+        }
+
+        let pngData: Data
+        if preservePNGData {
+            pngData = data
+        } else {
+            guard let convertedData = bitmap.representation(using: .png, properties: [:]) else {
+                return nil
+            }
+            pngData = convertedData
+        }
+
+        guard pngData.count <= maximumCapturedImageBytes else {
+            return nil
+        }
+
+        return ClipboardImagePayload(
+            data: pngData,
+            width: bitmap.pixelsWide,
+            height: bitmap.pixelsHigh
+        )
     }
 
     private func pruneHistory(now: Date = Date()) {

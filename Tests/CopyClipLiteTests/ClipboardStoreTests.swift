@@ -89,6 +89,51 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertTrue(store.items.contains { $0.text == "pinned" })
     }
 
+    func testPollingCapturesImagePasteboardData() throws {
+        let pasteboard = makePasteboard()
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: ClipboardStorage(appDirectory: try makeTemporaryDirectory()),
+            defaults: makeDefaults()
+        )
+        let pngData = try makePNGData(width: 3, height: 4)
+
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setData(pngData, forType: .png))
+
+        store.pollPasteboardForChanges()
+
+        let item = try XCTUnwrap(store.items.first)
+        XCTAssertEqual(item.contentKind, .image)
+        XCTAssertEqual(item.image?.data, pngData)
+        XCTAssertEqual(item.image?.width, 3)
+        XCTAssertEqual(item.image?.height, 4)
+        XCTAssertEqual(item.previewText, "Image")
+        XCTAssertEqual(store.visibleItems(matching: "image").map(\.id), [item.id])
+    }
+
+    func testCopyImageItemWritesImagePasteboardTypes() throws {
+        let pasteboard = makePasteboard()
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let pngData = try makePNGData(width: 2, height: 3)
+        storage.save([
+            ClipboardItem(image: ClipboardImagePayload(data: pngData, width: 2, height: 3))
+        ])
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: storage,
+            defaults: makeDefaults()
+        )
+        let item = try XCTUnwrap(store.items.first)
+
+        store.copy(item)
+
+        XCTAssertEqual(pasteboard.data(forType: .png), pngData)
+        XCTAssertNotNil(pasteboard.data(forType: .tiff))
+        XCTAssertNil(pasteboard.string(forType: .string))
+        XCTAssertEqual(store.items.first?.copyCount, 2)
+    }
+
     func testClearUnpinnedOnQuitKeepsPinnedItems() throws {
         let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
         let defaults = makeDefaults()
@@ -134,5 +179,32 @@ final class ClipboardStoreTests: XCTestCase {
 
     private func makePasteboard() -> NSPasteboard {
         NSPasteboard(name: NSPasteboard.Name("CopyClipLiteTests-\(UUID().uuidString)"))
+    }
+
+    private func makePNGData(width: Int, height: Int) throws -> Data {
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: width,
+            pixelsHigh: height,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ))
+
+        for y in 0..<height {
+            for x in 0..<width {
+                bitmap.setColor(
+                    NSColor(calibratedRed: 0.1, green: 0.2, blue: 0.9, alpha: 1),
+                    atX: x,
+                    y: y
+                )
+            }
+        }
+
+        return try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
     }
 }

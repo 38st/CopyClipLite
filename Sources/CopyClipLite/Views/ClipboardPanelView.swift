@@ -7,6 +7,7 @@ struct ClipboardPanelView: View {
     @State private var searchText = ""
     @State private var contentFilter: ClipboardContentFilter = .all
     @State private var selectedItemID: ClipboardItem.ID?
+    @State private var isConfirmingClear = false
     @FocusState private var isSearchFocused: Bool
 
     var body: some View {
@@ -33,6 +34,19 @@ struct ClipboardPanelView: View {
             footer
         }
         .background(.regularMaterial)
+        .confirmationDialog(
+            clearConfirmationTitle,
+            isPresented: $isConfirmingClear,
+            titleVisibility: .visible
+        ) {
+            Button(clearConfirmationActionTitle, role: .destructive) {
+                clearHistory()
+            }
+
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(clearConfirmationMessage)
+        }
         .background(
             ClipboardPanelKeyboardBridge { action in
                 handleKeyAction(action)
@@ -84,6 +98,7 @@ struct ClipboardPanelView: View {
             }
             .buttonStyle(.borderless)
             .help("Open window")
+            .accessibilityLabel("Open main window")
 
             Menu {
                 if store.isMonitoringEnabled {
@@ -109,6 +124,7 @@ struct ClipboardPanelView: View {
             }
             .buttonStyle(.borderless)
             .help("Monitoring")
+            .accessibilityLabel("Monitoring")
 
             SettingsLink {
                 Image(systemName: "gearshape")
@@ -116,6 +132,7 @@ struct ClipboardPanelView: View {
             }
             .buttonStyle(.borderless)
             .help("Settings")
+            .accessibilityLabel("Settings")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
@@ -142,6 +159,7 @@ struct ClipboardPanelView: View {
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
                 .help("Clear search")
+                .accessibilityLabel("Clear search")
             }
         }
         .padding(.horizontal, 10)
@@ -165,7 +183,7 @@ struct ClipboardPanelView: View {
     @ViewBuilder
     private func content(visible: [ClipboardItem], pinned: [ClipboardItem], recent: [ClipboardItem]) -> some View {
         if visible.isEmpty {
-            EmptyHistoryView(isSearching: !searchText.isEmpty || contentFilter != .all)
+            EmptyHistoryView(reason: emptyHistoryReason)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollView {
@@ -226,17 +244,21 @@ struct ClipboardPanelView: View {
             Spacer()
 
             Button(role: .destructive) {
-                store.clearHistory()
+                isConfirmingClear = true
             } label: {
                 Label("Clear", systemImage: "trash")
             }
-            .disabled(store.items.isEmpty)
+            .disabled(clearableItemCount == 0)
+            .help(clearButtonHelp)
+            .accessibilityLabel(clearButtonAccessibilityLabel)
 
             Button {
                 NSApplication.shared.terminate(nil)
             } label: {
                 Label("Quit", systemImage: "power")
             }
+            .help("Quit CopyClip Lite")
+            .accessibilityLabel("Quit CopyClip Lite")
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -269,6 +291,69 @@ struct ClipboardPanelView: View {
             focusSearch()
             return true
         }
+    }
+
+    private var emptyHistoryReason: EmptyHistoryReason {
+        let isSearching = !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+        if store.items.isEmpty {
+            return isSearching ? .noMatches : .noHistory
+        }
+
+        if isSearching {
+            return .noMatches
+        }
+
+        switch contentFilter {
+        case .all:
+            return .noHistory
+        case .text:
+            return .noTextClips
+        case .images:
+            return .noImageClips
+        case .pinned:
+            return .noPinnedClips
+        }
+    }
+
+    private var clearableItemCount: Int {
+        if store.keepPinnedOnClear {
+            return store.items.filter { !$0.isPinned }.count
+        }
+
+        return store.items.count
+    }
+
+    private var clearButtonHelp: String {
+        store.keepPinnedOnClear ? "Clear unpinned clips" : "Clear all clips"
+    }
+
+    private var clearButtonAccessibilityLabel: String {
+        store.keepPinnedOnClear ? "Clear unpinned clips" : "Clear all clips"
+    }
+
+    private var clearConfirmationTitle: String {
+        store.keepPinnedOnClear ? "Clear Unpinned Clips?" : "Clear All Clips?"
+    }
+
+    private var clearConfirmationActionTitle: String {
+        store.keepPinnedOnClear ? "Clear Unpinned" : "Clear All"
+    }
+
+    private var clearConfirmationMessage: String {
+        let itemText = clearableItemCount == 1 ? "1 clip" : "\(clearableItemCount) clips"
+
+        if store.keepPinnedOnClear {
+            return "This will delete \(itemText). Pinned clips will stay in your history."
+        }
+
+        return "This will permanently delete \(itemText) from your history."
+    }
+
+    private func clearHistory() {
+        store.clearHistory()
+        selectedItemID = nil
+        reconcileSelection()
     }
 
     private func moveSelection(by offset: Int) -> Bool {
@@ -359,18 +444,77 @@ private struct SectionHeader: View {
     }
 }
 
+private enum EmptyHistoryReason {
+    case noHistory
+    case noMatches
+    case noTextClips
+    case noImageClips
+    case noPinnedClips
+
+    var systemImage: String {
+        switch self {
+        case .noHistory:
+            "clipboard"
+        case .noMatches:
+            "magnifyingglass"
+        case .noTextClips:
+            "text.alignleft"
+        case .noImageClips:
+            "photo"
+        case .noPinnedClips:
+            "pin"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .noHistory:
+            "Copy something to start"
+        case .noMatches:
+            "No matches"
+        case .noTextClips:
+            "No text clips"
+        case .noImageClips:
+            "No image clips"
+        case .noPinnedClips:
+            "No pinned clips"
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .noHistory:
+            "Recent clips will appear here."
+        case .noMatches:
+            "Try a different search or filter."
+        case .noTextClips:
+            "Text clips will appear here."
+        case .noImageClips:
+            "Image clips will appear here."
+        case .noPinnedClips:
+            "Pinned clips will stay at the top."
+        }
+    }
+}
+
 private struct EmptyHistoryView: View {
-    let isSearching: Bool
+    let reason: EmptyHistoryReason
 
     var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: isSearching ? "magnifyingglass" : "clipboard")
+        VStack(spacing: 8) {
+            Image(systemName: reason.systemImage)
                 .font(.system(size: 34))
                 .foregroundStyle(.tertiary)
 
-            Text(isSearching ? "No matches" : "Copy something to start")
+            Text(reason.title)
                 .font(.callout)
+                .fontWeight(.medium)
                 .foregroundStyle(.secondary)
+
+            Text(reason.message)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
         }
         .padding()
     }

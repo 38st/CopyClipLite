@@ -54,14 +54,19 @@ struct ClipboardItemRow: View {
 
             VStack(spacing: 6) {
                 Button(action: togglePin) {
-                    Image(systemName: item.isPinned ? "pin.fill" : "pin")
+                    Label(
+                        item.isPinned ? "Unpin clip" : "Pin clip",
+                        systemImage: item.isPinned ? "pin.fill" : "pin"
+                    )
+                        .labelStyle(.iconOnly)
                         .frame(width: 22, height: 22)
                 }
                 .buttonStyle(.borderless)
                 .help(item.isPinned ? "Unpin" : "Pin")
 
                 Button(role: .destructive, action: delete) {
-                    Image(systemName: "trash")
+                    Label("Delete clip", systemImage: "trash")
+                        .labelStyle(.iconOnly)
                         .frame(width: 22, height: 22)
                 }
                 .buttonStyle(.borderless)

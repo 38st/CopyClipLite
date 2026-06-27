@@ -89,7 +89,11 @@ struct SettingsView: View {
                             Button(role: .destructive) {
                                 store.removeIgnoredApplication(application)
                             } label: {
-                                Image(systemName: "minus.circle")
+                                Label(
+                                    "Remove \(application.name)",
+                                    systemImage: "minus.circle"
+                                )
+                                    .labelStyle(.iconOnly)
                             }
                             .buttonStyle(.borderless)
                             .help("Remove")

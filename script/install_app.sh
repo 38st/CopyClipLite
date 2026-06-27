@@ -4,7 +4,7 @@ set -euo pipefail
 APP_DISPLAY_NAME="${COPYCLIP_APP_DISPLAY_NAME:-CopyClip Lite}"
 BUNDLE_ID="${COPYCLIP_BUNDLE_ID:-com.local.CopyClipLite}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SOURCE_APP="$ROOT_DIR/dist/$APP_DISPLAY_NAME.app"
+SOURCE_APP="$ROOT_DIR/dist/staging.noindex/$APP_DISPLAY_NAME.app"
 DEST_DIR="${COPYCLIP_INSTALL_DIR:-/Applications}"
 DEST_APP="$DEST_DIR/$APP_DISPLAY_NAME.app"
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"

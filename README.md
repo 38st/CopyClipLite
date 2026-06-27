@@ -47,7 +47,7 @@ Use the project-local run script:
 ./script/build_and_run.sh
 ```
 
-The script builds the SwiftPM target, stages `dist/CopyClip Lite.app`, and launches it as a menu-bar macOS app bundle.
+The script builds the SwiftPM target, stages `dist/staging.noindex/CopyClip Lite.app`, and launches it as a menu-bar macOS app bundle.
 
 ## Install
 

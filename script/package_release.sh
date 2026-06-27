@@ -4,7 +4,8 @@ set -euo pipefail
 APP_DISPLAY_NAME="${COPYCLIP_APP_DISPLAY_NAME:-CopyClip Lite}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
-APP_BUNDLE="$DIST_DIR/$APP_DISPLAY_NAME.app"
+STAGING_DIR="$DIST_DIR/staging.noindex"
+APP_BUNDLE="$STAGING_DIR/$APP_DISPLAY_NAME.app"
 INFO_PLIST="$APP_BUNDLE/Contents/Info.plist"
 ZIP_PATH="${COPYCLIP_RELEASE_ZIP:-$DIST_DIR/CopyClip-Lite-macOS.zip}"
 VERIFY_DIR=""
@@ -30,7 +31,7 @@ rm -f "$ZIP_PATH"
 mkdir -p "$(dirname "$ZIP_PATH")"
 
 (
-  cd "$DIST_DIR"
+  cd "$STAGING_DIR"
   /usr/bin/ditto \
     -c -k \
     --keepParent \

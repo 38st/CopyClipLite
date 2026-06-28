@@ -238,6 +238,7 @@ final class ClipboardStore: ObservableObject {
             .sorted { $0.lastCopiedAt > $1.lastCopiedAt }
         pruneHistory()
         flushPendingPersist()
+        storage.removeUnreferencedImageFiles(keeping: items)
     }
 
     func copy(_ item: ClipboardItem) {
@@ -269,12 +270,30 @@ final class ClipboardStore: ObservableObject {
 
     func copyWithTransformation(_ item: ClipboardItem, transformation: TextTransformation) {
         let transformedText = transformation.applied(to: item.text)
-        guard !transformedText.isEmpty else { return }
+        guard !transformedText.isEmpty,
+              transformedText.rangeOfCharacter(from: .whitespacesAndNewlines.inverted) != nil else {
+            return
+        }
 
         pasteboard.clearContents()
         pasteboard.setString(transformedText, forType: .string)
         lastPasteboardChangeCount = pasteboard.changeCount
-        record(transformedText, sourceApplication: item.sourceApplication)
+
+        if let existingIndex = items.firstIndex(where: { $0.text == transformedText }) {
+            var existing = items.remove(at: existingIndex)
+            existing.lastCopiedAt = Date()
+            existing.copyCount += 1
+            existing.sourceApplication = item.sourceApplication ?? existing.sourceApplication
+            items.insert(existing, at: 0)
+        } else {
+            items.insert(
+                ClipboardItem(text: transformedText, sourceApplication: item.sourceApplication),
+                at: 0
+            )
+        }
+
+        pruneHistory()
+        persist()
 
         if let recordedItem = items.first, recordedItem.text == transformedText {
             lastCopiedID = recordedItem.id
@@ -294,7 +313,7 @@ final class ClipboardStore: ObservableObject {
 
     func delete(_ item: ClipboardItem) {
         items.removeAll { $0.id == item.id }
-        persist()
+        flushPendingPersist()
         storage.removeUnreferencedImageFiles(keeping: items)
     }
 
@@ -305,7 +324,7 @@ final class ClipboardStore: ObservableObject {
             items.removeAll()
         }
 
-        persist()
+        flushPendingPersist()
         storage.removeUnreferencedImageFiles(keeping: items)
     }
 
@@ -394,6 +413,7 @@ final class ClipboardStore: ObservableObject {
         let keepPinned = defaults.object(forKey: DefaultsKey.keepPinnedOnClear) as? Bool ?? true
         let itemsToKeep = keepPinned ? storage.load().filter(\.isPinned) : []
         storage.save(itemsToKeep)
+        storage.removeUnreferencedImageFiles(keeping: itemsToKeep)
     }
 
     func clearUnpinnedHistoryOnQuitIfNeeded() {
@@ -409,6 +429,7 @@ final class ClipboardStore: ObservableObject {
         }
 
         flushPendingPersist()
+        storage.removeUnreferencedImageFiles(keeping: items)
     }
 
     private func record(

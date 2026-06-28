@@ -93,6 +93,8 @@ struct ClipboardItem: Identifiable, Codable, Hashable {
     var text: String
     var contentKind: ClipboardContentKind
     var image: ClipboardImagePayload?
+    var rtfData: Data?
+    var htmlData: Data?
     var createdAt: Date
     var lastCopiedAt: Date
     var isPinned: Bool
@@ -103,12 +105,14 @@ struct ClipboardItem: Identifiable, Codable, Hashable {
     private let cachedCharacterCount: Int
 
     enum CodingKeys: String, CodingKey {
-        case id, text, contentKind, image, createdAt, lastCopiedAt, isPinned, copyCount, sourceApplication
+        case id, text, contentKind, image, rtfData, htmlData, createdAt, lastCopiedAt, isPinned, copyCount, sourceApplication
     }
 
     init(
         id: UUID = UUID(),
         text: String,
+        rtfData: Data? = nil,
+        htmlData: Data? = nil,
         createdAt: Date = Date(),
         lastCopiedAt: Date = Date(),
         isPinned: Bool = false,
@@ -119,6 +123,8 @@ struct ClipboardItem: Identifiable, Codable, Hashable {
         self.text = text
         self.contentKind = .text
         self.image = nil
+        self.rtfData = rtfData
+        self.htmlData = htmlData
         self.createdAt = createdAt
         self.lastCopiedAt = lastCopiedAt
         self.isPinned = isPinned
@@ -142,6 +148,8 @@ struct ClipboardItem: Identifiable, Codable, Hashable {
         self.text = text
         self.contentKind = .image
         self.image = image
+        self.rtfData = nil
+        self.htmlData = nil
         self.createdAt = createdAt
         self.lastCopiedAt = lastCopiedAt
         self.isPinned = isPinned
@@ -164,6 +172,8 @@ struct ClipboardItem: Identifiable, Codable, Hashable {
         isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
         copyCount = try c.decodeIfPresent(Int.self, forKey: .copyCount) ?? 1
         sourceApplication = try c.decodeIfPresent(ClipboardSourceApplication.self, forKey: .sourceApplication)
+        rtfData = try c.decodeIfPresent(Data.self, forKey: .rtfData)
+        htmlData = try c.decodeIfPresent(Data.self, forKey: .htmlData)
         cachedPreview = Self.previewText(contentKind: contentKind, text: text, image: image)
         cachedCharacterCount = text.count
     }
@@ -179,6 +189,8 @@ struct ClipboardItem: Identifiable, Codable, Hashable {
         try c.encode(isPinned, forKey: .isPinned)
         try c.encode(copyCount, forKey: .copyCount)
         try c.encodeIfPresent(sourceApplication, forKey: .sourceApplication)
+        try c.encodeIfPresent(rtfData, forKey: .rtfData)
+        try c.encodeIfPresent(htmlData, forKey: .htmlData)
     }
 
     var previewText: String {
@@ -187,6 +199,10 @@ struct ClipboardItem: Identifiable, Codable, Hashable {
 
     var isImage: Bool {
         contentKind == .image && image != nil
+    }
+
+    var hasRichText: Bool {
+        rtfData != nil || htmlData != nil
     }
 
     var searchableText: String {

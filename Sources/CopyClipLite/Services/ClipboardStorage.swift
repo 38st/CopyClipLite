@@ -50,12 +50,14 @@ struct ClipboardStorage {
 
     func save(_ items: [ClipboardItem]) {
         var persistedItems = items
-        externalizeImageFiles(in: &persistedItems)
+        let didExternalize = externalizeImageFiles(in: &persistedItems)
         guard writeHistory(persistedItems) else {
             return
         }
 
-        removeUnreferencedImageFiles(keeping: persistedItems)
+        if didExternalize {
+            removeUnreferencedImageFiles(keeping: persistedItems)
+        }
     }
 
     func imageData(for item: ClipboardItem) -> Data? {
@@ -72,6 +74,22 @@ struct ClipboardStorage {
         }
 
         return try? Data(contentsOf: imageDirectoryURL.appendingPathComponent(fileName))
+    }
+
+    func thumbnailData(for item: ClipboardItem) -> Data? {
+        guard let image = item.image else {
+            return nil
+        }
+
+        if let data = image.thumbnailData {
+            return data
+        }
+
+        guard let thumbnailFileName = image.thumbnailFileName else {
+            return nil
+        }
+
+        return try? Data(contentsOf: imageDirectoryURL.appendingPathComponent(thumbnailFileName))
     }
 
     func export(_ items: [ClipboardItem], to url: URL) throws {
@@ -149,13 +167,6 @@ struct ClipboardStorage {
                 continue
             }
 
-            if image.thumbnailData == nil,
-               let thumbnailFileName = image.thumbnailFileName {
-                image.thumbnailData = try? Data(
-                    contentsOf: imageDirectoryURL.appendingPathComponent(thumbnailFileName)
-                )
-            }
-
             if image.byteCount == 0,
                let fileName = image.fileName,
                let attributes = try? fileManager.attributesOfItem(
@@ -199,7 +210,7 @@ struct ClipboardStorage {
         return true
     }
 
-    private func removeUnreferencedImageFiles(keeping items: [ClipboardItem]) {
+    func removeUnreferencedImageFiles(keeping items: [ClipboardItem]) {
         guard let fileNames = try? fileManager.contentsOfDirectory(atPath: imageDirectoryURL.path) else {
             return
         }
@@ -222,7 +233,7 @@ struct ClipboardStorage {
 
         let backupURL = fileURL
             .deletingPathExtension()
-            .appendingPathExtension("\(reason)-\(Self.backupTimestampFormatter.string(from: Date())).json")
+            .appendingPathExtension("\(reason)-\(Self.backupTimestampFormatter.string(from: Date()))-\(UUID().uuidString.prefix(8)).json")
 
         try? fileManager.moveItem(at: fileURL, to: backupURL)
         try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backupURL.path)

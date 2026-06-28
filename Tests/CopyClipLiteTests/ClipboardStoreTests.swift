@@ -69,7 +69,7 @@ final class ClipboardStoreTests: XCTestCase {
             ClipboardItem(text: "clip-\(index)", lastCopiedAt: now.addingTimeInterval(TimeInterval(-index)))
         }
         storage.save(clips + [
-            ClipboardItem(text: "pinned", lastCopiedAt: now.addingTimeInterval(-1_000), isPinned: true)
+            ClipboardItem(text: "pinned", lastCopiedAt: now, isPinned: true)
         ])
 
         let store = ClipboardStore(
@@ -254,32 +254,210 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertNil(defaults.object(forKey: "monitoringPausedUntil"))
     }
 
+    func testUnpinningAtHistoryLimitTrimsExcessItems() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let now = Date()
+        let clips = (0..<10).map { index in
+            ClipboardItem(text: "clip-\(index)", lastCopiedAt: now.addingTimeInterval(TimeInterval(-index)))
+        }
+        let pinnedClip = ClipboardItem(text: "pinned", lastCopiedAt: now, isPinned: true)
+        storage.save(clips + [pinnedClip])
+
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: storage,
+            defaults: makeDefaults()
+        )
+        store.setHistoryLimit(10)
+
+        XCTAssertEqual(store.items.filter { !$0.isPinned }.count, 10)
+
+        store.togglePin(pinnedClip)
+
+        XCTAssertEqual(store.items.filter { !$0.isPinned }.count, 10)
+        XCTAssertTrue(store.items.contains { $0.text == "pinned" && !$0.isPinned })
+    }
+
     func testClearUnpinnedOnQuitKeepsPinnedItems() throws {
         let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
         let defaults = makeDefaults()
         defaults.set(true, forKey: "clearUnpinnedOnQuit")
 
+        let pinned = ClipboardItem(text: "pinned", isPinned: true)
+        let unpinned = ClipboardItem(text: "unpinned")
+        storage.save([pinned, unpinned])
         let store = ClipboardStore(
             pasteboard: makePasteboard(),
             storage: storage,
             defaults: defaults
         )
-        store.setHistoryLimit(10)
+        store.clearUnpinnedHistoryOnQuitIfNeeded()
+
+        XCTAssertEqual(store.items.count, 1)
+        XCTAssertEqual(store.items.first?.text, "pinned")
+    }
+
+    func testStaticClearOnQuitRespectsKeepPinnedOnClearFalse() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let defaults = makeDefaults()
+        defaults.set(true, forKey: "clearUnpinnedOnQuit")
+        defaults.set(false, forKey: "keepPinnedOnClear")
 
         let pinned = ClipboardItem(text: "pinned", isPinned: true)
         let unpinned = ClipboardItem(text: "unpinned")
-        store.togglePin(pinned)
-        // Directly insert items for the test via copy workaround
         storage.save([pinned, unpinned])
-        let reloadedStore = ClipboardStore(
-            pasteboard: makePasteboard(),
-            storage: storage,
-            defaults: defaults
-        )
-        reloadedStore.clearUnpinnedHistoryOnQuitIfNeeded()
 
-        XCTAssertEqual(reloadedStore.items.count, 1)
-        XCTAssertEqual(reloadedStore.items.first?.text, "pinned")
+        ClipboardStore.clearUnpinnedHistoryOnQuitIfNeeded(storage: storage, defaults: defaults)
+
+        let remaining = storage.load()
+        XCTAssertTrue(remaining.isEmpty)
+    }
+
+    func testCopyWithTransformationRecordsTransformedText() throws {
+        let pasteboard = makePasteboard()
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        storage.save([ClipboardItem(text: "hello world")])
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: storage,
+            defaults: makeDefaults()
+        )
+        let item = try XCTUnwrap(store.items.first)
+
+        store.copyWithTransformation(item, transformation: .uppercase)
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "HELLO WORLD")
+        let transformedItem = try XCTUnwrap(store.items.first)
+        XCTAssertEqual(transformedItem.text, "HELLO WORLD")
+        XCTAssertEqual(transformedItem.copyCount, 1)
+        XCTAssertEqual(store.lastCopiedID, transformedItem.id)
+    }
+
+    func testCopyWithTransformationDeduplicatesExistingItem() throws {
+        let pasteboard = makePasteboard()
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        storage.save([
+            ClipboardItem(text: "HELLO WORLD"),
+            ClipboardItem(text: "hello world")
+        ])
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: storage,
+            defaults: makeDefaults()
+        )
+        let item = try XCTUnwrap(store.items.first(where: { $0.text == "hello world" }))
+
+        store.copyWithTransformation(item, transformation: .uppercase)
+
+        XCTAssertEqual(store.items.filter { $0.text == "HELLO WORLD" }.count, 1)
+        let transformedItem = try XCTUnwrap(store.items.first)
+        XCTAssertEqual(transformedItem.text, "HELLO WORLD")
+        XCTAssertEqual(transformedItem.copyCount, 2)
+    }
+
+    func testCopyWithTransformationEmptyResultIsIgnored() throws {
+        let pasteboard = makePasteboard()
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        storage.save([ClipboardItem(text: "   ")])
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: storage,
+            defaults: makeDefaults()
+        )
+        let initialCount = store.items.count
+        let item = try XCTUnwrap(store.items.first)
+
+        store.copyWithTransformation(item, transformation: .stripFormatting)
+
+        XCTAssertEqual(store.items.count, initialCount)
+        XCTAssertNil(pasteboard.string(forType: .string))
+    }
+
+    func testPollingCapturesRTFAndHTMLData() throws {
+        let pasteboard = makePasteboard()
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: ClipboardStorage(appDirectory: try makeTemporaryDirectory()),
+            defaults: makeDefaults()
+        )
+
+        let rtfData = "{\\rtf1\\ansi Hello}".data(using: .utf8)!
+        let htmlData = "<b>Hello</b>".data(using: .utf8)!
+
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("Hello", forType: .string))
+        XCTAssertTrue(pasteboard.setData(rtfData, forType: .rtf))
+        XCTAssertTrue(pasteboard.setData(htmlData, forType: .html))
+
+        store.pollPasteboardForChanges()
+
+        let item = try XCTUnwrap(store.items.first)
+        XCTAssertEqual(item.text, "Hello")
+        XCTAssertEqual(item.rtfData, rtfData)
+        XCTAssertEqual(item.htmlData, htmlData)
+        XCTAssertTrue(item.hasRichText)
+    }
+
+    func testCopyWritesRTFAndHTMLToPasteboard() throws {
+        let pasteboard = makePasteboard()
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let rtfData = "{\\rtf1\\ansi Hello}".data(using: .utf8)!
+        let htmlData = "<b>Hello</b>".data(using: .utf8)!
+        storage.save([
+            ClipboardItem(text: "Hello", rtfData: rtfData, htmlData: htmlData)
+        ])
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: storage,
+            defaults: makeDefaults()
+        )
+        let item = try XCTUnwrap(store.items.first)
+
+        store.copy(item)
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "Hello")
+        XCTAssertEqual(pasteboard.data(forType: .rtf), rtfData)
+        XCTAssertEqual(pasteboard.data(forType: .html), htmlData)
+    }
+
+    func testReCopyPlainTextClearsStaleRichTextData() throws {
+        let pasteboard = makePasteboard()
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let rtfData = "{\\rtf1\\ansi Hello}".data(using: .utf8)!
+        let htmlData = "<b>Hello</b>".data(using: .utf8)!
+        storage.save([
+            ClipboardItem(text: "Hello", rtfData: rtfData, htmlData: htmlData)
+        ])
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: storage,
+            defaults: makeDefaults()
+        )
+
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("Hello", forType: .string))
+
+        store.pollPasteboardForChanges()
+
+        let item = try XCTUnwrap(store.items.first)
+        XCTAssertEqual(item.text, "Hello")
+        XCTAssertNil(item.rtfData)
+        XCTAssertNil(item.htmlData)
+        XCTAssertFalse(item.hasRichText)
+    }
+
+    func testRTFHTMLDataSurvivesStorageRoundTrip() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let rtfData = "{\\rtf1\\ansi Hello}".data(using: .utf8)!
+        let htmlData = "<b>Hello</b>".data(using: .utf8)!
+        storage.save([
+            ClipboardItem(text: "Hello", rtfData: rtfData, htmlData: htmlData)
+        ])
+
+        let loadedItem = try XCTUnwrap(storage.load().first)
+        XCTAssertEqual(loadedItem.text, "Hello")
+        XCTAssertEqual(loadedItem.rtfData, rtfData)
+        XCTAssertEqual(loadedItem.htmlData, htmlData)
     }
 
     private func makeTemporaryDirectory() throws -> URL {

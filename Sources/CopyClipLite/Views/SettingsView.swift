@@ -65,7 +65,43 @@ struct SettingsView: View {
                     Label("Pause Monitoring", systemImage: "pause.circle")
                 }
 
-                LabeledContent("Global hotkey", value: hotkeyController.statusText)
+                LabeledContent("Global hotkey") {
+                    HotkeyRecorder(config: hotkeyController.config) { newConfig in
+                        hotkeyController.updateConfig(newConfig)
+                    }
+                    .frame(width: 160, height: 24)
+                }
+
+                if let errorMessage = hotkeyController.errorMessage {
+                    Text(errorMessage)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                Button("Reset to default (⌥⌘V)") {
+                    hotkeyController.updateConfig(.default)
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+
+                Toggle("Direct paste (copy & paste in one action)", isOn: $store.directPasteEnabled)
+
+                if store.directPasteEnabled {
+                    if PasteSimulator.isAccessibilityGranted {
+                        Text("Accessibility permission: granted")
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    } else {
+                        Text("Accessibility permission required for direct paste")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                        Button("Grant Accessibility Permission") {
+                            PasteSimulator.requestAccessibilityPermission()
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                    }
+                }
             }
 
             Section("Ignored Apps") {

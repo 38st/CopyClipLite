@@ -3,19 +3,22 @@ import SwiftUI
 
 struct ClipboardItemRow: View {
     let item: ClipboardItem
+    let rowID: ClipboardItem.ID
     let isCopied: Bool
     let isSelected: Bool
+    let thumbnailData: Data?
     let copy: () -> Void
     let togglePin: () -> Void
     let delete: () -> Void
     let ignoreApplication: (() -> Void)?
+    let transform: ((TextTransformation) -> Void)?
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Button(action: copy) {
                 HStack(alignment: .top, spacing: 10) {
                     if item.isImage {
-                        ClipboardImageThumbnail(data: item.image?.displayData)
+                        ClipboardImageThumbnail(data: thumbnailData)
                     }
 
                     VStack(alignment: .leading, spacing: 7) {
@@ -25,6 +28,15 @@ struct ClipboardItemRow: View {
                                 .foregroundStyle(.primary)
                                 .lineLimit(2)
                                 .multilineTextAlignment(.leading)
+
+                            if item.hasRichText {
+                                Text("RTF")
+                                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 4)
+                                    .padding(.vertical, 1)
+                                    .background(Color.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: 3))
+                            }
 
                             if isCopied {
                                 Image(systemName: "checkmark.circle.fill")
@@ -86,12 +98,24 @@ struct ClipboardItemRow: View {
         .contextMenu {
             Button("Copy", action: copy)
             Button(item.isPinned ? "Unpin" : "Pin", action: togglePin)
+
+            if item.contentKind == .text, let transform {
+                Menu("Transform & Copy") {
+                    ForEach(TextTransformation.allCases) { transformation in
+                        Button(transformation.title) {
+                            transform(transformation)
+                        }
+                    }
+                }
+            }
+
             if let ignoreApplication, let sourceApplication = item.sourceApplication {
                 Button("Ignore \(sourceApplication.name)", action: ignoreApplication)
             }
             Divider()
             Button("Delete", role: .destructive, action: delete)
         }
+        .id(rowID)
     }
 
     private var backgroundColor: Color {
@@ -113,14 +137,15 @@ struct ClipboardItemRow: View {
 
 private struct ClipboardImageThumbnail: View {
     let data: Data?
+    @State private var cachedImage: NSImage?
 
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 6)
                 .fill(Color(nsColor: .separatorColor).opacity(0.2))
 
-            if let nsImage {
-                Image(nsImage: nsImage)
+            if let cachedImage {
+                Image(nsImage: cachedImage)
                     .resizable()
                     .scaledToFill()
             } else {
@@ -135,13 +160,13 @@ private struct ClipboardImageThumbnail: View {
             RoundedRectangle(cornerRadius: 6)
                 .strokeBorder(Color(nsColor: .separatorColor).opacity(0.55))
         )
-    }
-
-    private var nsImage: NSImage? {
-        guard let data else {
-            return nil
+        .onAppear {
+            if cachedImage == nil, let data {
+                cachedImage = NSImage(data: data)
+            }
         }
-
-        return NSImage(data: data)
+        .onChange(of: data) { _, newData in
+            cachedImage = newData.flatMap(NSImage.init(data:))
+        }
     }
 }

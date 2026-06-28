@@ -71,7 +71,7 @@ final class ClipboardStorageTests: XCTestCase {
         XCTAssertEqual(loadedItem.contentKind, .image)
         XCTAssertNil(loadedItem.image?.data)
         XCTAssertEqual(storage.imageData(for: loadedItem), imageData)
-        XCTAssertEqual(loadedItem.image?.thumbnailData, thumbnailData)
+        XCTAssertEqual(storage.thumbnailData(for: loadedItem), thumbnailData)
         XCTAssertNotNil(loadedItem.image?.fileName)
         XCTAssertNotNil(loadedItem.image?.thumbnailFileName)
         XCTAssertEqual(loadedItem.previewText, "Image")
@@ -103,7 +103,7 @@ final class ClipboardStorageTests: XCTestCase {
 
         XCTAssertNil(loadedItem.image?.data)
         XCTAssertEqual(storage.imageData(for: loadedItem), imageData)
-        XCTAssertEqual(loadedItem.image?.thumbnailData, thumbnailData)
+        XCTAssertEqual(storage.thumbnailData(for: loadedItem), thumbnailData)
         XCTAssertEqual(loadedItem.image?.byteCount, imageData.count)
 
         let migratedHistoryText = try String(contentsOf: storage.fileURL, encoding: .utf8)

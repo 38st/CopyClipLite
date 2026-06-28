@@ -11,7 +11,7 @@ struct ClipboardPanelView: View {
     @FocusState private var isSearchFocused: Bool
 
     var body: some View {
-        let visible = currentVisibleItems
+        let visible = store.visibleItems(matching: searchText, filter: contentFilter)
         let pinned = visible.filter(\.isPinned)
         let recent = visible.filter { !$0.isPinned }
 
@@ -64,10 +64,6 @@ struct ClipboardPanelView: View {
         .onChange(of: visible.map(\.id)) { _, _ in
             reconcileSelection()
         }
-    }
-
-    private var currentVisibleItems: [ClipboardItem] {
-        store.visibleItems(matching: searchText, filter: contentFilter)
     }
 
     private var header: some View {
@@ -186,26 +182,35 @@ struct ClipboardPanelView: View {
             EmptyHistoryView(reason: emptyHistoryReason)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 8) {
-                    if !pinned.isEmpty {
-                        SectionHeader(title: "Pinned")
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        if !pinned.isEmpty {
+                            SectionHeader(title: "Pinned")
 
-                        ForEach(pinned) { item in
-                            row(for: item)
+                            ForEach(pinned) { item in
+                                row(for: item)
+                            }
+                        }
+
+                        if !recent.isEmpty {
+                            SectionHeader(title: pinned.isEmpty ? "Recent" : "History")
+
+                            ForEach(recent) { item in
+                                row(for: item)
+                            }
                         }
                     }
-
-                    if !recent.isEmpty {
-                        SectionHeader(title: pinned.isEmpty ? "Recent" : "History")
-
-                        ForEach(recent) { item in
-                            row(for: item)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 12)
+                }
+                .onChange(of: selectedItemID) { _, newID in
+                    if let newID {
+                        withAnimation {
+                            proxy.scrollTo(newID, anchor: .center)
                         }
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.bottom, 12)
             }
         }
     }
@@ -213,11 +218,17 @@ struct ClipboardPanelView: View {
     private func row(for item: ClipboardItem) -> some View {
         ClipboardItemRow(
             item: item,
+            rowID: item.id,
             isCopied: store.lastCopiedID == item.id,
             isSelected: selectedItemID == item.id,
+            thumbnailData: item.image?.displayData ?? store.thumbnailData(for: item),
             copy: {
                 selectedItemID = item.id
-                store.copy(item)
+                if store.directPasteEnabled && PasteSimulator.isAccessibilityGranted {
+                    store.copyAndPaste(item)
+                } else {
+                    store.copy(item)
+                }
             },
             togglePin: {
                 selectedItemID = item.id
@@ -228,7 +239,11 @@ struct ClipboardPanelView: View {
                 selectedItemID = nil
                 reconcileSelection()
             },
-            ignoreApplication: ignoreApplicationAction(for: item)
+            ignoreApplication: ignoreApplicationAction(for: item),
+            transform: item.contentKind == .text ? { transformation in
+                selectedItemID = item.id
+                store.copyWithTransformation(item, transformation: transformation)
+            } : nil
         )
     }
 
@@ -357,7 +372,7 @@ struct ClipboardPanelView: View {
     }
 
     private func moveSelection(by offset: Int) -> Bool {
-        let visibleItems = currentVisibleItems
+        let visibleItems = store.visibleItems(matching: searchText, filter: contentFilter)
         guard !visibleItems.isEmpty else {
             selectedItemID = nil
             return false
@@ -375,12 +390,17 @@ struct ClipboardPanelView: View {
     }
 
     private func copySelectedItem() -> Bool {
-        guard let item = selectedItem() ?? currentVisibleItems.first else {
+        let visibleItems = store.visibleItems(matching: searchText, filter: contentFilter)
+        guard let item = selectedItem() ?? visibleItems.first else {
             return false
         }
 
         selectedItemID = item.id
-        store.copy(item)
+        if store.directPasteEnabled && PasteSimulator.isAccessibilityGranted {
+            store.copyAndPaste(item)
+        } else {
+            store.copy(item)
+        }
         return true
     }
 
@@ -409,11 +429,11 @@ struct ClipboardPanelView: View {
             return nil
         }
 
-        return currentVisibleItems.first { $0.id == selectedItemID }
+        return store.visibleItems(matching: searchText, filter: contentFilter).first { $0.id == selectedItemID }
     }
 
     private func reconcileSelection() {
-        let visibleItems = currentVisibleItems
+        let visibleItems = store.visibleItems(matching: searchText, filter: contentFilter)
 
         if let selectedItemID,
            visibleItems.contains(where: { $0.id == selectedItemID }) {

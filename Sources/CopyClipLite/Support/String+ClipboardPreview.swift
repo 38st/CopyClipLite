@@ -15,29 +15,9 @@ extension String {
         return String(collapsed.prefix(limit)).trimmingCharacters(in: .whitespacesAndNewlines) + "..."
     }
 
-    private func reducingInternalWhitespace() -> String {
-        var result = ""
-        result.reserveCapacity(count)
-        var previous: Character?
-
-        for character in self {
-            switch character {
-            case " ", "\t":
-                if previous != " " {
-                    result.append(" ")
-                }
-                previous = " "
-            case "\n", "\r":
-                if previous != "\n" {
-                    result.append("\n")
-                }
-                previous = "\n"
-            default:
-                result.append(character)
-                previous = character
-            }
-        }
-
+    func reducingInternalWhitespace() -> String {
+        var result = self.replacingOccurrences(of: "[ \\t]+", with: " ", options: .regularExpression)
+        result = result.replacingOccurrences(of: "[\\r\\n]+", with: "\n", options: .regularExpression)
         return result
     }
 }

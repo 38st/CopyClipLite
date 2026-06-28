@@ -13,12 +13,13 @@ final class ClipboardStore: ObservableObject {
         static let monitoringEnabled = "monitoringEnabled"
         static let monitoringPausedUntil = "monitoringPausedUntil"
         static let ignoredApplications = "ignoredApplications"
+        static let directPasteEnabled = "directPasteEnabled"
     }
 
     private static let maximumCapturedCharacters = 20_000
     private static let maximumCapturedImageBytes = 10 * 1024 * 1024
     private static let defaultHistoryLimit = 50
-    private static let pollInterval: TimeInterval = 1.5
+    private static let pollInterval: TimeInterval = 0.5
     private static let pruneInterval: TimeInterval = 15 * 60
     private static let ignoredPasteboardTypes: Set<NSPasteboard.PasteboardType> = [
         NSPasteboard.PasteboardType("org.nspasteboard.TransientType"),
@@ -44,6 +45,11 @@ final class ClipboardStore: ObservableObject {
     @Published var clearUnpinnedOnQuit: Bool {
         didSet {
             defaults.set(clearUnpinnedOnQuit, forKey: DefaultsKey.clearUnpinnedOnQuit)
+        }
+    }
+    @Published var directPasteEnabled: Bool {
+        didSet {
+            defaults.set(directPasteEnabled, forKey: DefaultsKey.directPasteEnabled)
         }
     }
     @Published private(set) var isMonitoringEnabled: Bool {
@@ -74,6 +80,10 @@ final class ClipboardStore: ObservableObject {
 
     var storageLocation: URL {
         storage.fileURL
+    }
+
+    func thumbnailData(for item: ClipboardItem) -> Data? {
+        storage.thumbnailData(for: item)
     }
 
     var historySummaryText: String {
@@ -119,6 +129,8 @@ final class ClipboardStore: ObservableObject {
         self.keepPinnedOnClear = defaults.object(forKey: DefaultsKey.keepPinnedOnClear) as? Bool
             ?? true
         self.clearUnpinnedOnQuit = defaults.object(forKey: DefaultsKey.clearUnpinnedOnQuit) as? Bool
+            ?? false
+        self.directPasteEnabled = defaults.object(forKey: DefaultsKey.directPasteEnabled) as? Bool
             ?? false
         self.ignoredApplications = Self.loadIgnoredApplications(from: defaults)
         let storedMonitoringEnabled = defaults.object(forKey: DefaultsKey.monitoringEnabled) as? Bool
@@ -248,19 +260,42 @@ final class ClipboardStore: ObservableObject {
         clearCopiedIndicator(after: updated.id)
     }
 
+    func copyAndPaste(_ item: ClipboardItem) {
+        copy(item)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            PasteSimulator.simulatePaste()
+        }
+    }
+
+    func copyWithTransformation(_ item: ClipboardItem, transformation: TextTransformation) {
+        let transformedText = transformation.applied(to: item.text)
+        guard !transformedText.isEmpty else { return }
+
+        pasteboard.clearContents()
+        pasteboard.setString(transformedText, forType: .string)
+        lastPasteboardChangeCount = pasteboard.changeCount
+        record(transformedText, sourceApplication: item.sourceApplication)
+
+        if let recordedItem = items.first, recordedItem.text == transformedText {
+            lastCopiedID = recordedItem.id
+            clearCopiedIndicator(after: recordedItem.id)
+        }
+    }
+
     func togglePin(_ item: ClipboardItem) {
         guard let index = items.firstIndex(where: { $0.id == item.id }) else {
             return
         }
 
         items[index].isPinned.toggle()
-        removeExpiredUnpinnedItems(now: Date())
+        pruneHistory()
         persist()
     }
 
     func delete(_ item: ClipboardItem) {
         items.removeAll { $0.id == item.id }
         persist()
+        storage.removeUnreferencedImageFiles(keeping: items)
     }
 
     func clearHistory() {
@@ -271,6 +306,7 @@ final class ClipboardStore: ObservableObject {
         }
 
         persist()
+        storage.removeUnreferencedImageFiles(keeping: items)
     }
 
     private func startMonitoring() {
@@ -334,7 +370,9 @@ final class ClipboardStore: ObservableObject {
             return
         }
 
-        record(text, sourceApplication: sourceApplication)
+        let rtfData = pasteboard.data(forType: .rtf)
+        let htmlData = pasteboard.data(forType: .html)
+        record(text, rtfData: rtfData, htmlData: htmlData, sourceApplication: sourceApplication)
     }
 
     private func shouldIgnoreCurrentPasteboard() -> Bool {
@@ -353,8 +391,9 @@ final class ClipboardStore: ObservableObject {
             return
         }
 
-        let pinnedItems = storage.load().filter(\.isPinned)
-        storage.save(pinnedItems)
+        let keepPinned = defaults.object(forKey: DefaultsKey.keepPinnedOnClear) as? Bool ?? true
+        let itemsToKeep = keepPinned ? storage.load().filter(\.isPinned) : []
+        storage.save(itemsToKeep)
     }
 
     func clearUnpinnedHistoryOnQuitIfNeeded() {
@@ -372,7 +411,12 @@ final class ClipboardStore: ObservableObject {
         flushPendingPersist()
     }
 
-    private func record(_ text: String, sourceApplication: ClipboardSourceApplication? = nil) {
+    private func record(
+        _ text: String,
+        rtfData: Data? = nil,
+        htmlData: Data? = nil,
+        sourceApplication: ClipboardSourceApplication? = nil
+    ) {
         guard text.count <= Self.maximumCapturedCharacters else {
             return
         }
@@ -386,9 +430,14 @@ final class ClipboardStore: ObservableObject {
             existing.lastCopiedAt = Date()
             existing.copyCount += 1
             existing.sourceApplication = sourceApplication ?? existing.sourceApplication
+            existing.rtfData = rtfData
+            existing.htmlData = htmlData
             items.insert(existing, at: 0)
         } else {
-            items.insert(ClipboardItem(text: text, sourceApplication: sourceApplication), at: 0)
+            items.insert(
+                ClipboardItem(text: text, rtfData: rtfData, htmlData: htmlData, sourceApplication: sourceApplication),
+                at: 0
+            )
         }
 
         pruneHistory()
@@ -410,7 +459,11 @@ final class ClipboardStore: ObservableObject {
         }
 
         if let existingIndex = items.firstIndex(where: { item in
-            item.image?.contentHash == storedImage.contentHash
+            guard let existingHash = item.image?.contentHash,
+                  let newHash = storedImage.contentHash else {
+                return false
+            }
+            return existingHash == newHash
         }) {
             var existing = items.remove(at: existingIndex)
             existing.lastCopiedAt = Date()
@@ -436,6 +489,12 @@ final class ClipboardStore: ObservableObject {
         switch item.contentKind {
         case .text:
             pasteboard.setString(item.text, forType: .string)
+            if let rtfData = item.rtfData {
+                pasteboard.setData(rtfData, forType: .rtf)
+            }
+            if let htmlData = item.htmlData {
+                pasteboard.setData(htmlData, forType: .html)
+            }
         case .image:
             guard let imageData = storage.imageData(for: item) else {
                 return
@@ -521,15 +580,15 @@ final class ClipboardStore: ObservableObject {
             width: max(1, round(image.size.width * scale)),
             height: max(1, round(image.size.height * scale))
         )
-        let thumbnailImage = NSImage(size: thumbnailSize)
-        thumbnailImage.lockFocus()
-        image.draw(
-            in: NSRect(origin: .zero, size: thumbnailSize),
-            from: NSRect(origin: .zero, size: image.size),
-            operation: .copy,
-            fraction: 1
-        )
-        thumbnailImage.unlockFocus()
+        let thumbnailImage = NSImage(size: thumbnailSize, flipped: false) { rect in
+            image.draw(
+                in: rect,
+                from: NSRect(origin: .zero, size: image.size),
+                operation: .copy,
+                fraction: 1
+            )
+            return true
+        }
 
         guard let tiffData = thumbnailImage.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: tiffData) else {
@@ -649,7 +708,7 @@ final class ClipboardStore: ObservableObject {
         let snapshot = items
         let storageRef = storage
         persistTask = Task.detached(priority: .utility) {
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            try? await Task.sleep(nanoseconds: 150_000_000)
             guard !Task.isCancelled else { return }
             storageRef.save(snapshot)
         }

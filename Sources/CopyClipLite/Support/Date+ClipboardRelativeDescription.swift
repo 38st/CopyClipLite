@@ -31,14 +31,6 @@ extension Date {
             return "\(days)d ago"
         }
 
-        return Self.copyClipAbsoluteFormatter.string(from: self)
+        return self.formatted(date: .abbreviated, time: .shortened)
     }
-
-    private static let copyClipAbsoluteFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.doesRelativeDateFormatting = true
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        return formatter
-    }()
 }

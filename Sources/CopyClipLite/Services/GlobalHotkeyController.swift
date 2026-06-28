@@ -2,43 +2,59 @@ import AppKit
 import Carbon
 import Foundation
 
+@MainActor
 final class GlobalHotkeyController: ObservableObject {
     @Published private(set) var isRegistered = false
     @Published private(set) var errorMessage: String?
+    @Published private(set) var config: HotkeyConfig
 
     var action: (() -> Void)?
 
-    private var hotKeyRef: EventHotKeyRef?
-    private var eventHandlerRef: EventHandlerRef?
+    nonisolated(unsafe) private var hotKeyRef: EventHotKeyRef?
+    nonisolated(unsafe) private var eventHandlerRef: EventHandlerRef?
+    private var eventHandlerInstalled = false
+    nonisolated(unsafe) private var weakBox: Unmanaged<AnyObject>?
 
     var statusText: String {
         if isRegistered {
-            return "Option-Command-V"
+            return config.displayString
         }
 
         return errorMessage ?? "Unavailable"
     }
 
-    init() {
-        register()
+    init(config: HotkeyConfig = HotkeyConfig.load()) {
+        self.config = config
+        installEventHandlerIfNeeded()
+        registerHotKey()
     }
 
     deinit {
         unregister()
     }
 
-    private func register() {
+    func updateConfig(_ newConfig: HotkeyConfig) {
+        unregisterHotKey()
+        config = newConfig
+        newConfig.save()
+        registerHotKey()
+    }
+
+    private func installEventHandlerIfNeeded() {
+        guard !eventHandlerInstalled else { return }
+
         var eventType = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
             eventKind: UInt32(kEventHotKeyPressed)
         )
         var installedHandler: EventHandlerRef?
+        let box = HotkeyWeakBox(self)
         let handlerStatus = InstallEventHandler(
             GetApplicationEventTarget(),
             Self.handleHotKeyEvent,
             1,
             &eventType,
-            Unmanaged.passUnretained(self).toOpaque(),
+            Unmanaged.passRetained(box).toOpaque(),
             &installedHandler
         )
 
@@ -47,11 +63,17 @@ final class GlobalHotkeyController: ObservableObject {
             return
         }
 
+        eventHandlerRef = installedHandler
+        eventHandlerInstalled = true
+        weakBox = Unmanaged.passRetained(box)
+    }
+
+    private func registerHotKey() {
         let hotKeyID = EventHotKeyID(signature: Self.hotKeySignature, id: 1)
         var registeredHotKey: EventHotKeyRef?
         let registerStatus = RegisterEventHotKey(
-            UInt32(kVK_ANSI_V),
-            UInt32(cmdKey | optionKey),
+            UInt32(config.keyCode),
+            UInt32(config.modifiers),
             hotKeyID,
             GetApplicationEventTarget(),
             0,
@@ -59,20 +81,25 @@ final class GlobalHotkeyController: ObservableObject {
         )
 
         guard registerStatus == noErr else {
-            if let installedHandler {
-                RemoveEventHandler(installedHandler)
-            }
-            errorMessage = "Option-Command-V is in use"
+            errorMessage = "\(config.displayString) is in use"
+            isRegistered = false
             return
         }
 
-        eventHandlerRef = installedHandler
         hotKeyRef = registeredHotKey
         isRegistered = true
         errorMessage = nil
     }
 
-    private func unregister() {
+    private func unregisterHotKey() {
+        if let hotKeyRef {
+            UnregisterEventHotKey(hotKeyRef)
+            self.hotKeyRef = nil
+        }
+        isRegistered = false
+    }
+
+    nonisolated private func unregister() {
         if let hotKeyRef {
             UnregisterEventHotKey(hotKeyRef)
         }
@@ -83,7 +110,11 @@ final class GlobalHotkeyController: ObservableObject {
 
         hotKeyRef = nil
         eventHandlerRef = nil
-        isRegistered = false
+
+        if let weakBox {
+            weakBox.release()
+            self.weakBox = nil
+        }
     }
 
     private func performAction() {
@@ -95,15 +126,26 @@ final class GlobalHotkeyController: ObservableObject {
             return noErr
         }
 
-        let controller = Unmanaged<GlobalHotkeyController>
+        let box = Unmanaged<HotkeyWeakBox>
             .fromOpaque(userData)
             .takeUnretainedValue()
+
+        guard let controller = box.controller else {
+            return noErr
+        }
 
         DispatchQueue.main.async {
             controller.performAction()
         }
 
         return noErr
+    }
+
+    private final class HotkeyWeakBox {
+        weak var controller: GlobalHotkeyController?
+        init(_ controller: GlobalHotkeyController) {
+            self.controller = controller
+        }
     }
 
     private static let hotKeySignature: OSType = {

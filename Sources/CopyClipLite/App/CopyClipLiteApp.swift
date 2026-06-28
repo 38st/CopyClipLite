@@ -19,6 +19,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ClipboardStore.clearUnpinnedHistoryOnQuitIfNeeded()
         }
     }
+
+    func applicationWillResignActive(_ notification: Notification) {
+        store?.flushPendingPersist()
+    }
 }
 
 @main

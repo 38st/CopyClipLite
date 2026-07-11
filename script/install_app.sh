@@ -2,7 +2,7 @@
 set -euo pipefail
 
 APP_DISPLAY_NAME="${COPYCLIP_APP_DISPLAY_NAME:-CopyClip Lite}"
-BUNDLE_ID="${COPYCLIP_BUNDLE_ID:-com.local.CopyClipLite}"
+BUNDLE_ID="${COPYCLIP_BUNDLE_ID:-io.github.38st.CopyClipLite}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SOURCE_APP="$ROOT_DIR/dist/staging.noindex/$APP_DISPLAY_NAME.app"
 DEST_DIR="${COPYCLIP_INSTALL_DIR:-/Applications}"
@@ -21,7 +21,6 @@ if [[ -e "$DEST_APP/Contents/Info.plist" ]]; then
 fi
 
 /usr/bin/ditto --rsrc --extattr "$SOURCE_APP" "$DEST_APP"
-/usr/bin/xattr -dr com.apple.quarantine "$DEST_APP" >/dev/null 2>&1 || true
 /usr/bin/touch "$DEST_APP"
 
 if [[ -x "$LSREGISTER" ]]; then

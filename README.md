@@ -17,6 +17,7 @@ CopyClip Lite is a lightweight native macOS clipboard history utility. It runs f
 - Optional clear of unpinned history when quitting
 - App ignore list for skipping future clips from selected apps
 - History export and import
+- Validated import preview with merge/replace choices and automatic pre-import backups
 - Launch at Login setting for menu-bar startup
 - Native macOS app bundle with Finder, Spotlight, Launchpad, and menu-bar access
 - First-run welcome window
@@ -24,6 +25,10 @@ CopyClip Lite is a lightweight native macOS clipboard history utility. It runs f
 ## Privacy
 
 Clipboard history stays local on the Mac. CopyClip Lite does not upload clipboard contents, use an account, or send analytics.
+
+History files use owner-only permissions (`0600`) inside an owner-only directory (`0700`). They are not separately encrypted; enable FileVault if clipboard confidentiality matters. JSON exports are also unencrypted and may contain sensitive text and images.
+
+CopyClip Lite skips pasteboard data marked concealed, transient, or auto-generated. Source-app exclusions are best effort because macOS does not expose guaranteed clipboard ownership; the app checks the active application both while polling and immediately before application switches are recorded.
 
 History is stored at:
 
@@ -38,6 +43,14 @@ Image files are stored locally under:
 ```
 
 By default, CopyClip Lite keeps up to 50 unpinned clips and auto-clears unpinned clips after 7 days. Pinned clips never auto-clear.
+
+Text clips over 20,000 characters, encoded images over 10 MB, and images over 100 megapixels are skipped with an in-app warning so unexpectedly large clipboard data cannot freeze the interface or exhaust storage.
+
+## Requirements
+
+- macOS 14 Sonoma or later
+- Apple silicon or Intel Mac (release artifacts are universal)
+- Accessibility permission only when the optional Direct Paste feature is enabled
 
 ## Run
 
@@ -69,8 +82,15 @@ Create a validated share zip from the staged bundle:
 
 The script builds a release bundle, validates the bundle plist and code signature, writes `dist/CopyClip-Lite-macOS.zip`, verifies the zip, and reports the Gatekeeper assessment.
 
-By default, local builds are ad-hoc signed and intended for personal sharing, not App Store distribution. To create a Developer ID signed build for notarization, provide a signing identity:
+By default, local builds are ad-hoc signed and intended only for local validation. Public releases must use distribution mode, a Developer ID Application identity, and a `notarytool` keychain profile. The script signs with hardened runtime, submits to Apple, staples the ticket, rebuilds the ZIP, and requires Gatekeeper acceptance:
 
 ```bash
-COPYCLIP_CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./script/package_release.sh
+COPYCLIP_RELEASE_MODE=distribution \
+COPYCLIP_CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+COPYCLIP_NOTARY_PROFILE="CopyClipLiteNotary" \
+./script/package_release.sh
 ```
+
+Tagged releases (`vX.Y.Z`) run the same test/sign/notarize/staple flow through `.github/workflows/release.yml`. Configure the repository secrets documented in that workflow before publishing the first tag. CI validates tests, the package, and both `arm64` and `x86_64` slices on every pull request.
+
+The production bundle identifier is `io.github.38st.CopyClipLite`. On first launch after upgrading from the former local bundle identifier, CopyClip Lite migrates existing preferences; clipboard history remains in the same Application Support directory.

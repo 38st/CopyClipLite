@@ -1,7 +1,7 @@
 import AppKit
 import Foundation
 
-struct ClipboardSourceApplication: Codable, Hashable, Identifiable {
+struct ClipboardSourceApplication: Codable, Hashable, Identifiable, Sendable {
     var bundleIdentifier: String
     var name: String
 

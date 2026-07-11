@@ -4,9 +4,10 @@ set -euo pipefail
 MODE="${1:-run}"
 APP_NAME="CopyClipLite"
 APP_DISPLAY_NAME="${COPYCLIP_APP_DISPLAY_NAME:-CopyClip Lite}"
-BUNDLE_ID="${COPYCLIP_BUNDLE_ID:-com.local.CopyClipLite}"
-APP_VERSION="${COPYCLIP_VERSION:-1.0}"
-APP_BUILD_NUMBER="${COPYCLIP_BUILD_NUMBER:-1}"
+BUNDLE_ID="${COPYCLIP_BUNDLE_ID:-io.github.38st.CopyClipLite}"
+GIT_VERSION="$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" describe --tags --match 'v[0-9]*' --abbrev=0 2>/dev/null | sed 's/^v//' || true)"
+APP_VERSION="${COPYCLIP_VERSION:-${GIT_VERSION:-1.0.0}}"
+APP_BUILD_NUMBER="${COPYCLIP_BUILD_NUMBER:-$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" rev-list --count HEAD)}"
 MIN_SYSTEM_VERSION="14.0"
 CODESIGN_IDENTITY="${COPYCLIP_CODESIGN_IDENTITY:--}"
 
@@ -20,6 +21,19 @@ APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
 
+if [[ ! "$BUNDLE_ID" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]]; then
+  echo "Invalid bundle identifier: $BUNDLE_ID" >&2
+  exit 3
+fi
+if [[ ! "$APP_VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
+  echo "Invalid app version: $APP_VERSION" >&2
+  exit 3
+fi
+if [[ ! "$APP_BUILD_NUMBER" =~ ^[0-9]+$ ]]; then
+  echo "Invalid build number: $APP_BUILD_NUMBER" >&2
+  exit 3
+fi
+
 mkdir -p "$STAGING_DIR"
 
 CONFIGURATION="${COPYCLIP_BUILD_CONFIGURATION:-debug}"
@@ -28,6 +42,12 @@ if [[ "$MODE" == "package" || "$MODE" == "--package" ]]; then
 fi
 
 SWIFT_BUILD_ARGS=(-c "$CONFIGURATION")
+if [[ "$CONFIGURATION" == "release" ]]; then
+  read -r -a RELEASE_ARCHS <<<"${COPYCLIP_ARCHS:-arm64 x86_64}"
+  for arch in "${RELEASE_ARCHS[@]}"; do
+    SWIFT_BUILD_ARGS+=(--arch "$arch")
+  done
+fi
 
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 
@@ -80,6 +100,7 @@ if [[ "$CODESIGN_IDENTITY" != "-" ]]; then
 fi
 
 codesign "${CODESIGN_ARGS[@]}" "$APP_BUNDLE" >/dev/null
+codesign --verify --deep --strict "$APP_BUNDLE"
 
 open_app() {
   /usr/bin/open -n "$APP_BUNDLE"

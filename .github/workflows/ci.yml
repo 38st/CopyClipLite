@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test-and-package:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run tests
+        run: swift test
+      - name: Enforce strict concurrency warnings
+        run: swift build -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
+      - name: Build local release artifact
+        run: COPYCLIP_RELEASE_MODE=local ./script/package_release.sh
+      - name: Verify universal binary
+        run: |
+          ARCHS="$(lipo -archs 'dist/staging.noindex/CopyClip Lite.app/Contents/MacOS/CopyClipLite')"
+          [[ "$ARCHS" == *arm64* && "$ARCHS" == *x86_64* ]]
+      - name: Upload local validation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CopyClip-Lite-local-validation
+          path: dist/CopyClip-Lite-macOS.zip

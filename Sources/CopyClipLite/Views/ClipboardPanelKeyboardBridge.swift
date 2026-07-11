@@ -32,6 +32,7 @@ struct ClipboardPanelKeyboardBridge: NSViewRepresentable {
         coordinator.removeMonitor()
     }
 
+    @MainActor
     final class Coordinator {
         weak var view: NSView?
         var handle: (ClipboardPanelKeyAction) -> Bool

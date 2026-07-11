@@ -1,11 +1,11 @@
 import Foundation
 
-enum ClipboardContentKind: String, Codable, Hashable {
+enum ClipboardContentKind: String, Codable, Hashable, Sendable {
     case text
     case image
 }
 
-struct ClipboardImagePayload: Codable, Hashable {
+struct ClipboardImagePayload: Codable, Hashable, Sendable {
     var data: Data?
     var fileName: String?
     var thumbnailData: Data?
@@ -88,7 +88,7 @@ struct ClipboardImagePayload: Codable, Hashable {
     }
 }
 
-struct ClipboardItem: Identifiable, Codable, Hashable {
+struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     var text: String
     var contentKind: ClipboardContentKind

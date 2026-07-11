@@ -140,6 +140,70 @@ final class ClipboardStorageTests: XCTestCase {
         XCTAssertNil(importedItem.image?.thumbnailFileName)
     }
 
+    func testImportRejectsExternalImagePathsBeforeTheyReachStorageWrites() throws {
+        let directory = try makeTemporaryDirectory()
+        let storage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Store"))
+        let importURL = directory.appendingPathComponent("malicious.json")
+        let escapedURL = directory.appendingPathComponent("escaped.png")
+        let imageData = Data([0, 1, 2, 3])
+        let json = """
+        [{
+          "id":"00000000-0000-0000-0000-000000000001",
+          "text":"",
+          "contentKind":"image",
+          "image":{
+            "data":"\(imageData.base64EncodedString())",
+            "fileName":"../../escaped.png",
+            "width":1,
+            "height":1,
+            "byteCount":4
+          }
+        }]
+        """
+        try json.write(to: importURL, atomically: true, encoding: .utf8)
+
+        XCTAssertThrowsError(try storage.importItems(from: importURL)) { error in
+            XCTAssertEqual(
+                error as? ClipboardStorageError,
+                .invalidImportedItem("external image paths are not allowed")
+            )
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: escapedURL.path))
+    }
+
+    func testSavingPrunedHistoryRemovesOrphanedImageFiles() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let image = ClipboardImagePayload(
+            data: Data([0, 1, 2, 3]),
+            thumbnailData: Data([9, 8, 7]),
+            width: 1,
+            height: 1
+        )
+        storage.save([ClipboardItem(image: image)])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: storage.imageDirectoryURL.path).count, 2)
+
+        try storage.saveValidated([])
+
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: storage.imageDirectoryURL.path).isEmpty)
+    }
+
+    func testImportAcceptsPortableImageRecords() throws {
+        let directory = try makeTemporaryDirectory()
+        let sourceStorage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Source"))
+        let destinationStorage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Destination"))
+        let exportURL = directory.appendingPathComponent("portable.json")
+        sourceStorage.save([
+            ClipboardItem(image: ClipboardImagePayload(data: Data([1, 2, 3]), width: 1, height: 1))
+        ])
+        try sourceStorage.export(sourceStorage.load(), to: exportURL)
+
+        let imported = try destinationStorage.importItems(from: exportURL)
+        try destinationStorage.saveValidated(imported)
+
+        XCTAssertEqual(destinationStorage.load().count, 1)
+        XCTAssertEqual(destinationStorage.imageData(for: destinationStorage.load()[0]), Data([1, 2, 3]))
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("CopyClipLiteTests-\(UUID().uuidString)", isDirectory: true)

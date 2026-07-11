@@ -3,7 +3,9 @@ import SwiftUI
 
 struct ClipboardPanelView: View {
     @ObservedObject var store: ClipboardStore
+    @ObservedObject var pasteTargetController: PasteTargetController
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var searchText = ""
     @State private var contentFilter: ClipboardContentFilter = .all
     @State private var selectedItemID: ClipboardItem.ID?
@@ -23,6 +25,9 @@ struct ClipboardPanelView: View {
             VStack(spacing: 8) {
                 searchField
                 filterPicker
+                if let issueMessage {
+                    IssueBanner(message: issueMessage, dismiss: dismissIssue)
+                }
             }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
@@ -206,8 +211,12 @@ struct ClipboardPanelView: View {
                 }
                 .onChange(of: selectedItemID) { _, newID in
                     if let newID {
-                        withAnimation {
+                        if reduceMotion {
                             proxy.scrollTo(newID, anchor: .center)
+                        } else {
+                            withAnimation {
+                                proxy.scrollTo(newID, anchor: .center)
+                            }
                         }
                     }
                 }
@@ -222,13 +231,17 @@ struct ClipboardPanelView: View {
             isCopied: store.lastCopiedID == item.id,
             isSelected: selectedItemID == item.id,
             thumbnailData: item.image?.displayData ?? store.thumbnailData(for: item),
-            copy: {
+            activate: {
                 selectedItemID = item.id
-                if store.directPasteEnabled && PasteSimulator.isAccessibilityGranted {
-                    store.copyAndPaste(item)
+                if store.directPasteEnabled {
+                    pasteTargetController.paste(item, using: store)
                 } else {
                     store.copy(item)
                 }
+            },
+            copy: {
+                selectedItemID = item.id
+                store.copy(item)
             },
             togglePin: {
                 selectedItemID = item.id
@@ -255,6 +268,12 @@ struct ClipboardPanelView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
                 .layoutPriority(1)
+
+            Text("↑↓ · ↩ · P")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .help("Arrow keys select, Return uses a clip, P pins")
 
             Spacer()
 
@@ -396,8 +415,8 @@ struct ClipboardPanelView: View {
         }
 
         selectedItemID = item.id
-        if store.directPasteEnabled && PasteSimulator.isAccessibilityGranted {
-            store.copyAndPaste(item)
+        if store.directPasteEnabled {
+            pasteTargetController.paste(item, using: store)
         } else {
             store.copy(item)
         }
@@ -447,6 +466,39 @@ struct ClipboardPanelView: View {
         DispatchQueue.main.async {
             isSearchFocused = true
         }
+    }
+
+    private var issueMessage: String? {
+        pasteTargetController.lastError ?? store.storageErrorMessage ?? store.captureWarning
+    }
+
+    private func dismissIssue() {
+        pasteTargetController.dismissError()
+        store.dismissStorageError()
+        store.dismissCaptureWarning()
+    }
+}
+
+private struct IssueBanner: View {
+    let message: String
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            Button(action: dismiss) {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Dismiss warning")
+        }
+        .padding(8)
+        .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 7))
     }
 }
 

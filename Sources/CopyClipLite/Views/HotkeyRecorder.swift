@@ -21,11 +21,10 @@ struct HotkeyRecorder: NSViewRepresentable {
     }
 }
 
-final class HotkeyRecorderView: NSView {
+final class HotkeyRecorderView: NSButton {
     var config: HotkeyConfig = .default
     var onChange: ((HotkeyConfig) -> Void)?
 
-    private let label = NSTextField(labelWithString: "")
     private var isRecording = false
 
     override init(frame frameRect: NSRect) {
@@ -39,39 +38,28 @@ final class HotkeyRecorderView: NSView {
     }
 
     private func setupView() {
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.alignment = .center
-        label.font = .systemFont(ofSize: 13, weight: .medium)
-        label.isBezeled = true
-        label.bezelStyle = .roundedBezel
-        label.drawsBackground = true
-        label.backgroundColor = .controlBackgroundColor
-        label.focusRingType = .none
-        addSubview(label)
-
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor),
-            label.topAnchor.constraint(equalTo: topAnchor),
-            label.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
-
+        bezelStyle = .rounded
+        setButtonType(.momentaryPushIn)
+        font = .systemFont(ofSize: 13, weight: .medium)
+        focusRingType = .default
+        target = self
+        action = #selector(beginRecording)
+        setAccessibilityLabel("Global hotkey")
+        setAccessibilityHelp("Press to record a new keyboard shortcut. Press Escape to cancel.")
         refreshLabel()
     }
 
     override var canBecomeKeyView: Bool { true }
-    override var acceptsFirstResponder: Bool { true }
 
-    override func mouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
+    @objc private func beginRecording() {
         isRecording = true
-        label.stringValue = "Press a key combination…"
-        label.backgroundColor = NSColor.selectedControlColor
+        title = "Press a key combination…"
+        setAccessibilityValue("Recording")
+        window?.makeFirstResponder(self)
     }
 
     override func resignFirstResponder() -> Bool {
         isRecording = false
-        label.backgroundColor = .controlBackgroundColor
         refreshLabel()
         return true
     }
@@ -84,7 +72,6 @@ final class HotkeyRecorderView: NSView {
 
         if event.keyCode == kVK_Escape {
             isRecording = false
-            label.backgroundColor = .controlBackgroundColor
             refreshLabel()
             return
         }
@@ -104,7 +91,6 @@ final class HotkeyRecorderView: NSView {
         let newConfig = HotkeyConfig(keyCode: keyCode, modifiers: modifiers)
         config = newConfig
         isRecording = false
-        label.backgroundColor = .controlBackgroundColor
         refreshLabel()
         onChange?(newConfig)
     }
@@ -113,6 +99,7 @@ final class HotkeyRecorderView: NSView {
         if isRecording {
             return
         }
-        label.stringValue = config.displayString
+        title = config.displayString
+        setAccessibilityValue(config.displayString)
     }
 }

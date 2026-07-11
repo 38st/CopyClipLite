@@ -7,6 +7,7 @@ struct ClipboardItemRow: View {
     let isCopied: Bool
     let isSelected: Bool
     let thumbnailData: Data?
+    let activate: () -> Void
     let copy: () -> Void
     let togglePin: () -> Void
     let delete: () -> Void
@@ -15,7 +16,7 @@ struct ClipboardItemRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Button(action: copy) {
+            Button(action: activate) {
                 HStack(alignment: .top, spacing: 10) {
                     if item.isImage {
                         ClipboardImageThumbnail(data: thumbnailData)
@@ -62,7 +63,10 @@ struct ClipboardItemRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("Copy")
+            .help("Use clip")
+            .accessibilityLabel(item.previewText)
+            .accessibilityValue(accessibilityValue)
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
 
             VStack(spacing: 6) {
                 Button(action: togglePin) {
@@ -71,7 +75,7 @@ struct ClipboardItemRow: View {
                         systemImage: item.isPinned ? "pin.fill" : "pin"
                     )
                         .labelStyle(.iconOnly)
-                        .frame(width: 22, height: 22)
+                        .frame(width: 28, height: 28)
                 }
                 .buttonStyle(.borderless)
                 .help(item.isPinned ? "Unpin" : "Pin")
@@ -79,7 +83,7 @@ struct ClipboardItemRow: View {
                 Button(role: .destructive, action: delete) {
                     Label("Delete clip", systemImage: "trash")
                         .labelStyle(.iconOnly)
-                        .frame(width: 22, height: 22)
+                        .frame(width: 28, height: 28)
                 }
                 .buttonStyle(.borderless)
                 .help("Delete")
@@ -132,6 +136,12 @@ struct ClipboardItemRow: View {
         }
 
         return Color(nsColor: .separatorColor).opacity(0.45)
+    }
+
+    private var accessibilityValue: String {
+        [isSelected ? "Selected" : nil, isCopied ? "Copied" : nil, item.metadataText]
+            .compactMap { $0 }
+            .joined(separator: ", ")
     }
 }
 

@@ -89,7 +89,7 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertTrue(store.items.contains { $0.text == "pinned" })
     }
 
-    func testPollingCapturesImagePasteboardData() throws {
+    func testPollingCapturesImagePasteboardData() async throws {
         let pasteboard = makePasteboard()
         let store = ClipboardStore(
             pasteboard: pasteboard,
@@ -102,6 +102,7 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertTrue(pasteboard.setData(pngData, forType: .png))
 
         store.pollPasteboardForChanges()
+        try await waitForCapturedItem(in: store)
 
         let item = try XCTUnwrap(store.items.first)
         let image = try XCTUnwrap(item.image)
@@ -138,7 +139,33 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertEqual(store.items.first?.copyCount, 2)
     }
 
-    func testImagePasteboardWithAssociatedTextKeepsText() throws {
+    func testMissingImageDoesNotClearExistingClipboardOrReportCopySuccess() throws {
+        let pasteboard = makePasteboard()
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        storage.save([
+            ClipboardItem(image: ClipboardImagePayload(data: try makePNGData(width: 2, height: 2), width: 2, height: 2))
+        ])
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: storage,
+            defaults: makeDefaults(),
+            sourceApplicationProvider: { nil }
+        )
+        let item = try XCTUnwrap(store.items.first)
+        for fileName in [item.image?.fileName, item.image?.thumbnailFileName].compactMap({ $0 }) {
+            try FileManager.default.removeItem(at: storage.imageDirectoryURL.appendingPathComponent(fileName))
+        }
+        pasteboard.clearContents()
+        pasteboard.setString("keep me", forType: .string)
+
+        XCTAssertFalse(store.copy(item))
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "keep me")
+        XCTAssertEqual(store.items.first?.copyCount, 1)
+        XCTAssertNotNil(store.storageErrorMessage)
+    }
+
+    func testImagePasteboardWithAssociatedTextKeepsText() async throws {
         let pasteboard = makePasteboard()
         let store = ClipboardStore(
             pasteboard: pasteboard,
@@ -152,6 +179,7 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertTrue(pasteboard.setString("chart caption", forType: .string))
 
         store.pollPasteboardForChanges()
+        try await waitForCapturedItem(in: store)
 
         let item = try XCTUnwrap(store.items.first)
         XCTAssertEqual(item.contentKind, .image)
@@ -460,6 +488,28 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertEqual(loadedItem.htmlData, htmlData)
     }
 
+    func testImportMergesByDefaultPathAndCreatesPrivateBackup() throws {
+        let directory = try makeTemporaryDirectory()
+        let storage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Store"))
+        let sourceStorage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Source"))
+        let importURL = directory.appendingPathComponent("import.json")
+        storage.save([ClipboardItem(text: "existing")])
+        sourceStorage.save([ClipboardItem(text: "imported")])
+        try sourceStorage.export(sourceStorage.load(), to: importURL)
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: storage,
+            defaults: makeDefaults(),
+            sourceApplicationProvider: { nil }
+        )
+
+        let backupURL = try store.importHistory(from: importURL, strategy: .merge)
+
+        XCTAssertEqual(Set(store.items.map(\.text)), ["existing", "imported"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: backupURL.path))
+        XCTAssertEqual(try permissions(at: backupURL), 0o600)
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("CopyClipLiteTests-\(UUID().uuidString)", isDirectory: true)
@@ -504,5 +554,17 @@ final class ClipboardStoreTests: XCTestCase {
         }
 
         return try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+    }
+
+    private func permissions(at url: URL) throws -> Int {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        return attributes[.posixPermissions] as? Int ?? -1
+    }
+
+    private func waitForCapturedItem(in store: ClipboardStore) async throws {
+        for _ in 0..<100 where store.items.isEmpty {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertFalse(store.items.isEmpty, "Timed out waiting for background image processing")
     }
 }

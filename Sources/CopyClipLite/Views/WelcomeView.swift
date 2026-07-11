@@ -24,10 +24,27 @@ struct WelcomeView: View {
                     .foregroundStyle(.secondary)
             }
 
-            VStack(alignment: .leading, spacing: 12) {
-                WelcomeRow(systemImage: "menubar.rectangle", title: "Menu Bar")
-                WelcomeRow(systemImage: "lock.doc", title: "Local History")
-                WelcomeRow(systemImage: "pin", title: "Pinned Clips")
+            VStack(alignment: .leading, spacing: 14) {
+                WelcomeRow(
+                    systemImage: "menubar.rectangle",
+                    title: "Open it instantly",
+                    detail: "Use the menu bar or press ⌥⌘V."
+                )
+                WelcomeRow(
+                    systemImage: "lock.doc",
+                    title: "Stored only on this Mac",
+                    detail: "The last 50 unpinned clips auto-clear after 7 days."
+                )
+                WelcomeRow(
+                    systemImage: "eye.slash",
+                    title: "Protect sensitive copies",
+                    detail: "Concealed clipboard data is skipped; add source exclusions in Settings."
+                )
+                WelcomeRow(
+                    systemImage: "externaldrive.badge.exclamationmark",
+                    title: "Protected by your Mac login",
+                    detail: "History uses private file permissions but is not separately encrypted. FileVault is recommended."
+                )
             }
             .padding(.vertical, 4)
 
@@ -40,7 +57,7 @@ struct WelcomeView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
 
-            Text("CopyClip Lite keeps running from the menu bar. Close this window any time.")
+            Text("CopyClip Lite keeps running from the menu bar without a Dock icon. You can pause or clear monitoring at any time.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
@@ -55,6 +72,7 @@ struct WelcomeView: View {
 private struct WelcomeRow: View {
     let systemImage: String
     let title: String
+    let detail: String
 
     var body: some View {
         HStack(spacing: 10) {
@@ -62,9 +80,15 @@ private struct WelcomeRow: View {
                 .foregroundStyle(.tint)
                 .frame(width: 20)
 
-            Text(title)
-                .font(.callout)
-                .foregroundStyle(.primary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.callout)
+                    .fontWeight(.medium)
+                Text(detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }

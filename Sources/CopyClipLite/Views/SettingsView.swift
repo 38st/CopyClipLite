@@ -8,13 +8,9 @@ struct SettingsView: View {
     @ObservedObject var hotkeyController: GlobalHotkeyController
     @ObservedObject var pasteTargetController: PasteTargetController
     @StateObject private var updateChecker = UpdateChecker()
+    @StateObject private var transferState = SettingsTransferState()
     @Environment(\.scenePhase) private var scenePhase
-    @State private var transferMessage: String?
-    @State private var transferError: String?
-    @State private var pendingImportArtifact: ClipboardImportArtifact?
-    @State private var isConfirmingImport = false
     @State private var isConfirmingExport = false
-    @State private var transferTask: Task<Void, Never>?
 
     private var historyLimit: Binding<Int> {
         Binding(get: { store.historyLimit }, set: { store.setHistoryLimit($0) })
@@ -66,7 +62,7 @@ struct SettingsView: View {
         }
         .confirmationDialog(
             importConfirmationTitle,
-            isPresented: $isConfirmingImport,
+            isPresented: $transferState.isConfirmingImport,
             titleVisibility: .visible
         ) {
             Button("Merge with Existing History") { performImport(strategy: .merge) }
@@ -268,17 +264,17 @@ struct SettingsView: View {
                             .controlSize(.small)
                         Spacer()
                         Button("Cancel") {
-                            transferTask?.cancel()
+                            transferState.task?.cancel()
                         }
                     }
                 }
-                if let transferMessage {
+                if let transferMessage = transferState.message {
                     Text(transferMessage)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
-                if let transferError {
+                if let transferError = transferState.error {
                     SettingsErrorText(transferError)
                 }
             }
@@ -313,7 +309,7 @@ struct SettingsView: View {
     }
 
     private var importConfirmationTitle: String {
-        guard let preview = pendingImportArtifact?.preview else {
+        guard let preview = transferState.pendingImportArtifact?.preview else {
             return "Import Clipboard History?"
         }
         let clipWord = preview.itemCount == 1 ? "clip" : "clips"
@@ -321,7 +317,7 @@ struct SettingsView: View {
     }
 
     private var importConfirmationMessage: String {
-        guard let artifact = pendingImportArtifact else {
+        guard let artifact = transferState.pendingImportArtifact else {
             return "A private backup is created before import."
         }
         let merge = store.importProjection(for: artifact, strategy: .merge)
@@ -359,41 +355,41 @@ struct SettingsView: View {
     }
 
     private func performExport() {
-        transferMessage = nil
-        transferError = nil
+        transferState.message = nil
+        transferState.error = nil
         guard let url = ClipboardHistoryTransferPanel.exportDestinationURL(
             defaultFileName: "CopyClip-Lite-History.json"
         ) else { return }
 
-        transferTask = Task {
-            defer { transferTask = nil }
+        transferState.task = Task {
+            defer { transferState.task = nil }
             do {
                 try await store.exportHistoryAsync(to: url)
-                transferMessage = "Exported history to \(url.lastPathComponent)."
+                transferState.message = "Exported history to \(url.lastPathComponent)."
             } catch is CancellationError {
-                transferMessage = "Export cancelled."
+                transferState.message = "Export cancelled."
             } catch {
-                transferError = error.localizedDescription
+                transferState.error = error.localizedDescription
             }
         }
     }
 
     private func chooseImport() {
-        transferMessage = nil
-        transferError = nil
+        transferState.message = nil
+        transferState.error = nil
         guard let url = ClipboardHistoryTransferPanel.importSourceURL() else { return }
 
-        transferTask = Task {
-            defer { transferTask = nil }
+        transferState.task = Task {
+            defer { transferState.task = nil }
             do {
-                pendingImportArtifact = try await store.prepareImport(from: url)
-                isConfirmingImport = true
+                transferState.pendingImportArtifact = try await store.prepareImport(from: url)
+                transferState.isConfirmingImport = true
             } catch is CancellationError {
                 clearPendingImport()
-                transferMessage = "Import cancelled."
+                transferState.message = "Import cancelled."
             } catch {
                 clearPendingImport()
-                transferError = error.localizedDescription
+                transferState.error = error.localizedDescription
             }
         }
     }
@@ -406,76 +402,100 @@ struct SettingsView: View {
             return false
         }
 
-        transferMessage = nil
-        transferError = nil
+        transferState.message = nil
+        transferState.error = nil
         let sourceFileName = provider.suggestedName ?? "Dropped history.json"
-        let transferErrorBinding = $transferError
-        let transferMessageBinding = $transferMessage
-        let transferTaskBinding = $transferTask
-        let pendingImportArtifactBinding = $pendingImportArtifact
-        let isConfirmingImportBinding = $isConfirmingImport
-        let clipboardStore = store
-        provider.loadDataRepresentation(
-            forTypeIdentifier: UTType.json.identifier
-        ) { data, error in
-            let loadErrorDescription = error?.localizedDescription
-            Task { @MainActor [
-                data,
-                loadErrorDescription,
-                sourceFileName,
-                transferErrorBinding,
-                transferMessageBinding,
-                transferTaskBinding,
-                pendingImportArtifactBinding,
-                isConfirmingImportBinding,
-                clipboardStore
-            ] in
-                if let loadErrorDescription {
-                    transferErrorBinding.wrappedValue = loadErrorDescription
-                    return
-                }
-                guard let data else {
-                    transferErrorBinding.wrappedValue = "The dropped history could not be read."
-                    return
-                }
-                transferTaskBinding.wrappedValue = Task { @MainActor in
-                    defer { transferTaskBinding.wrappedValue = nil }
-                    do {
-                        pendingImportArtifactBinding.wrappedValue = try await clipboardStore.prepareImport(
-                            data: data,
-                            sourceFileName: sourceFileName
-                        )
-                        isConfirmingImportBinding.wrappedValue = true
-                    } catch is CancellationError {
-                        pendingImportArtifactBinding.wrappedValue = nil
-                        isConfirmingImportBinding.wrappedValue = false
-                        transferMessageBinding.wrappedValue = "Import cancelled."
-                    } catch {
-                        pendingImportArtifactBinding.wrappedValue = nil
-                        isConfirmingImportBinding.wrappedValue = false
-                        transferErrorBinding.wrappedValue = error.localizedDescription
-                    }
-                }
-            }
-        }
+        transferState.loadDroppedImport(
+            from: provider,
+            sourceFileName: sourceFileName,
+            store: store
+        )
         return true
     }
 
     private func performImport(strategy: ClipboardImportStrategy) {
-        guard let artifact = pendingImportArtifact else { return }
-        isConfirmingImport = false
-        transferTask = Task {
-            defer { transferTask = nil }
+        guard let artifact = transferState.pendingImportArtifact else { return }
+        transferState.isConfirmingImport = false
+        transferState.task = Task {
+            defer { transferState.task = nil }
             do {
                 let projection = store.importProjection(for: artifact, strategy: strategy)
                 let commit = try await store.importHistory(artifact: artifact, strategy: strategy)
-                transferMessage = "Imported \(projection.finalCount) clips. Backup: \(commit.backupURL.lastPathComponent)"
+                transferState.message = "Imported \(projection.finalCount) clips. Backup: \(commit.backupURL.lastPathComponent)"
             } catch is CancellationError {
-                transferMessage = "Import cancelled before history was changed."
+                transferState.message = "Import cancelled before history was changed."
             } catch {
-                transferError = error.localizedDescription
+                transferState.error = error.localizedDescription
             }
             clearPendingImport()
+        }
+    }
+
+    private func clearPendingImport() {
+        transferState.pendingImportArtifact = nil
+        transferState.isConfirmingImport = false
+    }
+}
+
+@MainActor
+private final class SettingsTransferState: ObservableObject {
+    @Published var message: String?
+    @Published var error: String?
+    @Published var pendingImportArtifact: ClipboardImportArtifact?
+    @Published var isConfirmingImport = false
+    var task: Task<Void, Never>?
+
+    func loadDroppedImport(
+        from provider: NSItemProvider,
+        sourceFileName: String,
+        store: ClipboardStore
+    ) {
+        provider.loadDataRepresentation(
+            forTypeIdentifier: UTType.json.identifier
+        ) { [weak self, store] data, error in
+            let loadErrorDescription = error?.localizedDescription
+            Task { @MainActor [weak self, store, data, loadErrorDescription, sourceFileName] in
+                self?.receiveDroppedImport(
+                    data: data,
+                    loadErrorDescription: loadErrorDescription,
+                    sourceFileName: sourceFileName,
+                    store: store
+                )
+            }
+        }
+    }
+
+    private func receiveDroppedImport(
+        data: Data?,
+        loadErrorDescription: String?,
+        sourceFileName: String,
+        store: ClipboardStore
+    ) {
+        if let loadErrorDescription {
+            error = loadErrorDescription
+            return
+        }
+        guard let data else {
+            error = "The dropped history could not be read."
+            return
+        }
+
+        task = Task { @MainActor [weak self, store, data, sourceFileName] in
+            guard let self else { return }
+            defer { task = nil }
+            do {
+                pendingImportArtifact = try await store.prepareImport(
+                    data: data,
+                    sourceFileName: sourceFileName
+                )
+                isConfirmingImport = true
+            } catch is CancellationError {
+                clearPendingImport()
+                message = "Import cancelled."
+            } catch {
+                clearPendingImport()
+                self.error = error.localizedDescription
+            }
         }
     }
 

@@ -93,3 +93,7 @@ Published app versions use one `X.Y.Z` grammar, and release tags use the matchin
 Public distribution still requires a public release repository/feed. Local builds intentionally omit the update feed and report that no public channel is configured; the tagged-release workflow embeds the GitHub Releases endpoint in the verified ad-hoc build.
 
 The production bundle identifier is `io.github.38st.CopyClipLite`. On first launch after upgrading from the former local bundle identifier, CopyClip Lite migrates existing preferences; clipboard history remains in the same Application Support directory.
+
+## License
+
+CopyClip Lite is available under the [MIT License](LICENSE).

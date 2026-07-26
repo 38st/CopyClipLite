@@ -63,11 +63,20 @@ struct ClipboardPanelKeyboardBridge: NSViewRepresentable {
 
         private func handle(_ event: NSEvent) -> Bool {
             let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            let commandOnly = modifiers == .command
-            let noModifiers = modifiers.subtracting([.capsLock, .numericPad, .function]).isEmpty
+            let normalizedModifiers = modifiers.subtracting([.capsLock, .numericPad, .function])
+            let commandOnly = normalizedModifiers == .command
+            let noModifiers = normalizedModifiers.isEmpty
 
             if commandOnly, event.charactersIgnoringModifiers?.lowercased() == "f" {
                 return handle(.focusSearch)
+            }
+
+            if commandOnly, event.charactersIgnoringModifiers?.lowercased() == "p" {
+                return handle(.togglePinSelected)
+            }
+
+            if commandOnly, event.keyCode == 51 || event.keyCode == 117 {
+                return handle(.deleteSelected)
             }
 
             guard noModifiers else {

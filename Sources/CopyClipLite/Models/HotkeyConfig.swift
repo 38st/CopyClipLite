@@ -2,6 +2,23 @@ import AppKit
 import Carbon
 import Foundation
 
+enum HotkeyConfigValidationError: LocalizedError, Equatable {
+    case keyCodeOutOfRange
+    case unsupportedModifiers
+    case unsafeModifierCombination
+
+    var errorDescription: String? {
+        switch self {
+        case .keyCodeOutOfRange:
+            return "Choose a supported keyboard key."
+        case .unsupportedModifiers:
+            return "The shortcut contains unsupported modifier keys."
+        case .unsafeModifierCombination:
+            return "Use Command, Option, or Control. Shift cannot be the only modifier."
+        }
+    }
+}
+
 struct HotkeyConfig: Codable, Equatable {
     let keyCode: Int
     let modifiers: Int
@@ -13,15 +30,36 @@ struct HotkeyConfig: Codable, Equatable {
 
     var displayString: String {
         var parts: [String] = []
-        if modifiers & cmdKey != 0 { parts.append("⌘") }
-        if modifiers & optionKey != 0 { parts.append("⌥") }
         if modifiers & controlKey != 0 { parts.append("⌃") }
+        if modifiers & optionKey != 0 { parts.append("⌥") }
         if modifiers & shiftKey != 0 { parts.append("⇧") }
+        if modifiers & cmdKey != 0 { parts.append("⌘") }
         parts.append(keyLabel)
         return parts.joined()
     }
 
+    var validationError: HotkeyConfigValidationError? {
+        guard (0...Int(UInt16.max)).contains(keyCode) else {
+            return .keyCodeOutOfRange
+        }
+
+        let allowedModifiers = cmdKey | optionKey | controlKey | shiftKey
+        guard modifiers != 0, modifiers & ~allowedModifiers == 0 else {
+            return .unsupportedModifiers
+        }
+
+        guard modifiers & (cmdKey | optionKey | controlKey) != 0 else {
+            return .unsafeModifierCombination
+        }
+
+        return nil
+    }
+
     var keyLabel: String {
+        if let layoutLabel = Self.currentKeyboardLayoutLabel(for: keyCode) {
+            return layoutLabel
+        }
+
         switch keyCode {
         case kVK_ANSI_A: return "A"
         case kVK_ANSI_B: return "B"
@@ -86,9 +124,59 @@ struct HotkeyConfig: Codable, Equatable {
         }
     }
 
+    private static func currentKeyboardLayoutLabel(for keyCode: Int) -> String? {
+        guard let inputSource = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+              let property = TISGetInputSourceProperty(
+                inputSource,
+                kTISPropertyUnicodeKeyLayoutData
+              ) else {
+            return nil
+        }
+
+        let layoutData = unsafeBitCast(property, to: CFData.self)
+        guard let bytes = CFDataGetBytePtr(layoutData) else {
+            return nil
+        }
+
+        let keyboardLayout = UnsafePointer<UCKeyboardLayout>(
+            OpaquePointer(bytes)
+        )
+        var deadKeyState: UInt32 = 0
+        var characters = [UniChar](repeating: 0, count: 8)
+        var actualLength = 0
+        let status = UCKeyTranslate(
+            keyboardLayout,
+            UInt16(keyCode),
+            UInt16(kUCKeyActionDisplay),
+            0,
+            UInt32(LMGetKbdType()),
+            OptionBits(kUCKeyTranslateNoDeadKeysBit),
+            &deadKeyState,
+            characters.count,
+            &actualLength,
+            &characters
+        )
+        guard status == noErr, actualLength > 0 else {
+            return nil
+        }
+
+        let label = String(
+            utf16CodeUnits: characters,
+            count: actualLength
+        )
+        guard label.unicodeScalars.allSatisfy({
+            !CharacterSet.controlCharacters.contains($0)
+                && !CharacterSet.whitespacesAndNewlines.contains($0)
+        }) else {
+            return nil
+        }
+        return label.uppercased(with: .current)
+    }
+
     static func load(from defaults: UserDefaults = .standard) -> HotkeyConfig {
         guard let data = defaults.data(forKey: DefaultsKey.hotkeyConfig),
-              let config = try? JSONDecoder().decode(HotkeyConfig.self, from: data) else {
+              let config = try? JSONDecoder().decode(HotkeyConfig.self, from: data),
+              config.validationError == nil else {
             return .default
         }
         return config

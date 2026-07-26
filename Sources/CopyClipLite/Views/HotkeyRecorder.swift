@@ -5,6 +5,17 @@ import SwiftUI
 struct HotkeyRecorder: NSViewRepresentable {
     let config: HotkeyConfig
     let onChange: (HotkeyConfig) -> Void
+    let onRecordingChanged: (Bool) -> Void
+
+    init(
+        config: HotkeyConfig,
+        onChange: @escaping (HotkeyConfig) -> Void,
+        onRecordingChanged: @escaping (Bool) -> Void = { _ in }
+    ) {
+        self.config = config
+        self.onChange = onChange
+        self.onRecordingChanged = onRecordingChanged
+    }
 
     func makeNSView(context: Context) -> HotkeyRecorderView {
         let view = HotkeyRecorderView()
@@ -12,11 +23,13 @@ struct HotkeyRecorder: NSViewRepresentable {
         view.onChange = { newConfig in
             onChange(newConfig)
         }
+        view.onRecordingChanged = onRecordingChanged
         return view
     }
 
     func updateNSView(_ nsView: HotkeyRecorderView, context: Context) {
         nsView.config = config
+        nsView.onRecordingChanged = onRecordingChanged
         nsView.refreshLabel()
     }
 }
@@ -24,6 +37,7 @@ struct HotkeyRecorder: NSViewRepresentable {
 final class HotkeyRecorderView: NSButton {
     var config: HotkeyConfig = .default
     var onChange: ((HotkeyConfig) -> Void)?
+    var onRecordingChanged: ((Bool) -> Void)?
 
     private var isRecording = false
 
@@ -56,11 +70,11 @@ final class HotkeyRecorderView: NSButton {
         title = "Press a key combination…"
         setAccessibilityValue("Recording")
         window?.makeFirstResponder(self)
+        onRecordingChanged?(true)
     }
 
     override func resignFirstResponder() -> Bool {
-        isRecording = false
-        refreshLabel()
+        finishRecording()
         return true
     }
 
@@ -71,8 +85,7 @@ final class HotkeyRecorderView: NSButton {
         }
 
         if event.keyCode == kVK_Escape {
-            isRecording = false
-            refreshLabel()
+            finishRecording()
             return
         }
 
@@ -89,10 +102,15 @@ final class HotkeyRecorderView: NSButton {
         }
 
         let newConfig = HotkeyConfig(keyCode: keyCode, modifiers: modifiers)
+        if let validationError = newConfig.validationError {
+            NSSound.beep()
+            setAccessibilityValue(validationError.localizedDescription)
+            return
+        }
+
         config = newConfig
-        isRecording = false
-        refreshLabel()
         onChange?(newConfig)
+        finishRecording()
     }
 
     func refreshLabel() {
@@ -101,5 +119,12 @@ final class HotkeyRecorderView: NSButton {
         }
         title = config.displayString
         setAccessibilityValue(config.displayString)
+    }
+
+    private func finishRecording() {
+        guard isRecording else { return }
+        isRecording = false
+        refreshLabel()
+        onRecordingChanged?(false)
     }
 }

@@ -2,26 +2,85 @@ import AppKit
 import Foundation
 
 @MainActor
+protocol PasteTargetApplication: AnyObject {
+    var pasteBundleIdentifier: String? { get }
+    var pasteLocalizedName: String? { get }
+    var pasteProcessIdentifier: pid_t { get }
+    var pasteIsTerminated: Bool { get }
+    var pasteIsActive: Bool { get }
+    func activateForPaste() -> Bool
+}
+
+extension NSRunningApplication: PasteTargetApplication {
+    var pasteBundleIdentifier: String? { bundleIdentifier }
+    var pasteLocalizedName: String? { localizedName }
+    var pasteProcessIdentifier: pid_t { processIdentifier }
+    var pasteIsTerminated: Bool { isTerminated }
+    var pasteIsActive: Bool { isActive }
+
+    func activateForPaste() -> Bool {
+        activate(options: [])
+    }
+}
+
+@MainActor
+struct PasteTargetRuntime {
+    var isAccessibilityGranted: () -> Bool
+    var requestAccessibilityPermission: () -> Void
+    var simulatePaste: () -> Bool
+    var openAccessibilitySettings: () -> Void
+    var hideApplication: () -> Void
+    var restoreApplication: () -> Void
+
+    static let live = PasteTargetRuntime(
+        isAccessibilityGranted: { PasteSimulator.isAccessibilityGranted },
+        requestAccessibilityPermission: { PasteSimulator.requestAccessibilityPermission() },
+        simulatePaste: { PasteSimulator.simulatePaste() },
+        openAccessibilitySettings: { PasteSimulator.openAccessibilitySettings() },
+        hideApplication: { NSApp.hide(nil) },
+        restoreApplication: {
+            NSApp.unhide(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    )
+}
+
+@MainActor
 final class PasteTargetController: ObservableObject {
-    @Published private(set) var isAccessibilityGranted = PasteSimulator.isAccessibilityGranted
+    @Published private(set) var isAccessibilityGranted: Bool
     @Published private(set) var lastError: String?
 
-    private var lastExternalApplication: NSRunningApplication?
+    private var lastExternalApplication: (any PasteTargetApplication)?
     nonisolated(unsafe) private var activationObserver: NSObjectProtocol?
     private var pendingPasteTask: Task<Void, Never>?
+    private var pasteRequestGeneration: UInt64 = 0
+    private var isPreservingTargetForSystemSettings = false
+    private let runtime: PasteTargetRuntime
+    private let activationPollCount: Int
+    private let activationPollNanoseconds: UInt64
+    private let stabilizationNanoseconds: UInt64
 
-    init() {
-        captureCurrentTarget()
-        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
-                    as? NSRunningApplication else { return }
-            Task { @MainActor [weak self] in
-                self?.rememberIfExternal(application)
-            }
+    init(
+        initialTarget: (any PasteTargetApplication)? = nil,
+        runtime: PasteTargetRuntime? = nil,
+        observeWorkspace: Bool = true,
+        activationPollCount: Int = 20,
+        activationPollNanoseconds: UInt64 = 50_000_000,
+        stabilizationNanoseconds: UInt64 = 100_000_000
+    ) {
+        let runtime = runtime ?? .live
+        self.runtime = runtime
+        self.isAccessibilityGranted = runtime.isAccessibilityGranted()
+        self.lastExternalApplication = initialTarget
+        self.activationPollCount = activationPollCount
+        self.activationPollNanoseconds = activationPollNanoseconds
+        self.stabilizationNanoseconds = stabilizationNanoseconds
+
+        if initialTarget == nil {
+            captureCurrentTarget()
+        }
+        if observeWorkspace {
+            installActivationObserver()
         }
     }
 
@@ -33,7 +92,7 @@ final class PasteTargetController: ObservableObject {
     }
 
     var targetApplicationName: String? {
-        lastExternalApplication?.localizedName
+        lastExternalApplication?.pasteLocalizedName
     }
 
     func captureCurrentTarget() {
@@ -41,62 +100,93 @@ final class PasteTargetController: ObservableObject {
     }
 
     func refreshPermission() {
-        isAccessibilityGranted = PasteSimulator.isAccessibilityGranted
+        isAccessibilityGranted = runtime.isAccessibilityGranted()
         if isAccessibilityGranted, lastError == Self.permissionError {
             lastError = nil
         }
     }
 
     func requestPermission() {
-        PasteSimulator.requestAccessibilityPermission()
+        runtime.requestAccessibilityPermission()
         refreshPermission()
     }
 
     func openAccessibilitySettings() {
-        PasteSimulator.openAccessibilitySettings()
+        isPreservingTargetForSystemSettings = true
+        runtime.openAccessibilitySettings()
     }
 
     func paste(_ item: ClipboardItem, using store: ClipboardStore) {
+        cancelPendingPaste()
         refreshPermission()
         guard isAccessibilityGranted else {
-            lastError = Self.permissionError
-            NSSound.beep()
+            fail(Self.permissionError, restoreUI: false)
             return
         }
-        guard let target = lastExternalApplication, !target.isTerminated else {
-            lastError = "Open the destination app once, then try Direct Paste again."
-            NSSound.beep()
+        guard let target = lastExternalApplication, !target.pasteIsTerminated else {
+            fail("Open the destination app once, then try Direct Paste again.", restoreUI: false)
             return
         }
         guard store.copy(item) else {
-            lastError = store.storageErrorMessage ?? "The clip could not be copied."
-            NSSound.beep()
+            fail(store.storageErrorMessage ?? "The clip could not be copied.", restoreUI: false)
             return
         }
 
-        pendingPasteTask?.cancel()
+        pasteRequestGeneration &+= 1
+        let requestGeneration = pasteRequestGeneration
         lastError = nil
-        NSApp.hide(nil)
-        guard target.activate(options: []) else {
-            lastError = "\(target.localizedName ?? "The destination app") could not be activated."
+        runtime.hideApplication()
+        guard target.activateForPaste() else {
+            fail(
+                "\(target.pasteLocalizedName ?? "The destination app") could not be activated.",
+                restoreUI: true
+            )
             return
         }
 
-        pendingPasteTask = Task { @MainActor [weak self, weak target] in
-            for _ in 0..<8 {
-                try? await Task.sleep(nanoseconds: 50_000_000)
-                guard !Task.isCancelled else { return }
-                if target?.isActive == true { break }
+        pendingPasteTask = Task { @MainActor [weak self, target] in
+            guard let self else { return }
+            for _ in 0..<self.activationPollCount {
+                try? await Task.sleep(nanoseconds: self.activationPollNanoseconds)
+                guard !Task.isCancelled,
+                      self.pasteRequestGeneration == requestGeneration else {
+                    return
+                }
+                if target.pasteIsActive { break }
             }
-            guard target?.isActive == true else {
-                self?.lastError = "The destination app did not become active, so nothing was pasted."
+
+            guard target.pasteIsActive else {
+                self.fail(
+                    "The destination app did not become active, so nothing was pasted.",
+                    restoreUI: true
+                )
                 return
             }
-            guard PasteSimulator.simulatePaste() else {
-                self?.lastError = "macOS could not create the paste event."
+
+            try? await Task.sleep(nanoseconds: self.stabilizationNanoseconds)
+            guard !Task.isCancelled,
+                  self.pasteRequestGeneration == requestGeneration,
+                  !target.pasteIsTerminated,
+                  target.pasteIsActive else {
+                self.fail(
+                    "The destination app was no longer ready, so nothing was pasted.",
+                    restoreUI: true
+                )
                 return
             }
-            self?.lastError = nil
+
+            self.refreshPermission()
+            guard self.isAccessibilityGranted else {
+                self.fail(Self.permissionError, restoreUI: true)
+                return
+            }
+            guard self.runtime.simulatePaste() else {
+                self.fail("macOS could not create the paste event.", restoreUI: true)
+                return
+            }
+
+            self.pendingPasteTask = nil
+            self.lastError = nil
         }
     }
 
@@ -104,13 +194,56 @@ final class PasteTargetController: ObservableObject {
         lastError = nil
     }
 
-    private func rememberIfExternal(_ application: NSRunningApplication?) {
+    private func installActivationObserver() {
+        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                    as? NSRunningApplication else { return }
+            Task { @MainActor [weak self] in
+                self?.handleActivation(application)
+            }
+        }
+    }
+
+    private func handleActivation(_ application: any PasteTargetApplication) {
+        let isOwnApplication = application.pasteBundleIdentifier == Bundle.main.bundleIdentifier
+            || application.pasteProcessIdentifier == ProcessInfo.processInfo.processIdentifier
+        if isOwnApplication {
+            isPreservingTargetForSystemSettings = false
+            return
+        }
+        guard !isPreservingTargetForSystemSettings else {
+            return
+        }
+        rememberIfExternal(application)
+    }
+
+    private func rememberIfExternal(_ application: (any PasteTargetApplication)?) {
         guard let application,
-              application.bundleIdentifier != Bundle.main.bundleIdentifier,
-              application.processIdentifier != ProcessInfo.processInfo.processIdentifier else {
+              application.pasteBundleIdentifier != Bundle.main.bundleIdentifier,
+              application.pasteProcessIdentifier != ProcessInfo.processInfo.processIdentifier else {
             return
         }
         lastExternalApplication = application
+    }
+
+    private func cancelPendingPaste() {
+        pasteRequestGeneration &+= 1
+        pendingPasteTask?.cancel()
+        pendingPasteTask = nil
+    }
+
+    private func fail(_ message: String, restoreUI: Bool) {
+        pendingPasteTask?.cancel()
+        pendingPasteTask = nil
+        lastError = message
+        if restoreUI {
+            runtime.restoreApplication()
+        }
+        NSSound.beep()
     }
 
     private static let permissionError = "Direct Paste needs Accessibility permission. Open Settings to grant it."

@@ -101,9 +101,6 @@ struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     var copyCount: Int
     var sourceApplication: ClipboardSourceApplication?
 
-    private let cachedPreview: String
-    private let cachedCharacterCount: Int
-
     enum CodingKeys: String, CodingKey {
         case id, text, contentKind, image, rtfData, htmlData, createdAt, lastCopiedAt, isPinned, copyCount, sourceApplication
     }
@@ -130,8 +127,6 @@ struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         self.isPinned = isPinned
         self.copyCount = copyCount
         self.sourceApplication = sourceApplication
-        self.cachedPreview = text.copyClipPreview(limit: 160)
-        self.cachedCharacterCount = text.count
     }
 
     init(
@@ -155,8 +150,6 @@ struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         self.isPinned = isPinned
         self.copyCount = copyCount
         self.sourceApplication = sourceApplication
-        self.cachedPreview = Self.previewText(contentKind: .image, text: text, image: image)
-        self.cachedCharacterCount = text.count
     }
 
     init(from decoder: Decoder) throws {
@@ -174,8 +167,6 @@ struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         sourceApplication = try c.decodeIfPresent(ClipboardSourceApplication.self, forKey: .sourceApplication)
         rtfData = try c.decodeIfPresent(Data.self, forKey: .rtfData)
         htmlData = try c.decodeIfPresent(Data.self, forKey: .htmlData)
-        cachedPreview = Self.previewText(contentKind: contentKind, text: text, image: image)
-        cachedCharacterCount = text.count
     }
 
     func encode(to encoder: Encoder) throws {
@@ -194,7 +185,7 @@ struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     }
 
     var previewText: String {
-        cachedPreview
+        Self.previewText(contentKind: contentKind, text: text, image: image)
     }
 
     var isImage: Bool {
@@ -224,7 +215,7 @@ struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
 
         switch contentKind {
         case .text:
-            let countText = cachedCharacterCount == 1 ? "1 character" : "\(cachedCharacterCount) characters"
+            let countText = text.count == 1 ? "1 character" : "\(text.count) characters"
             return [countText, copies, sourceName]
                 .compactMap { $0 }
                 .joined(separator: " · ")

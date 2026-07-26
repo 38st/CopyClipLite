@@ -180,6 +180,8 @@ struct SettingsView: View {
                 LabeledContent("Open clipboard search") {
                     HotkeyRecorder(config: hotkeyController.config) { newConfig in
                         hotkeyController.updateConfig(newConfig)
+                    } onRecordingChanged: { isRecording in
+                        hotkeyController.setRecording(isRecording)
                     }
                     .frame(width: 180, height: 28)
                 }
@@ -201,6 +203,10 @@ struct SettingsView: View {
 
                 if store.directPasteEnabled {
                     LabeledContent(
+                        "Paste target",
+                        value: pasteTargetController.targetApplicationName ?? "Open a destination app"
+                    )
+                    LabeledContent(
                         "Accessibility permission",
                         value: pasteTargetController.isAccessibilityGranted ? "Granted" : "Required"
                     )
@@ -220,8 +226,8 @@ struct SettingsView: View {
             Section("List Keyboard Controls") {
                 LabeledContent("Move selection", value: "↑ / ↓")
                 LabeledContent("Use selected clip", value: "Return")
-                LabeledContent("Pin or unpin", value: "P")
-                LabeledContent("Delete selected clip", value: "Delete")
+                LabeledContent("Pin or unpin", value: "⌘P")
+                LabeledContent("Delete selected clip", value: "⌘⌫")
                 LabeledContent("Focus search", value: "⌘F")
             }
         }

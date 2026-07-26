@@ -1,6 +1,12 @@
 import AppKit
 import SwiftUI
 
+enum ClipboardPanelOrdering {
+    static func displayedItems(_ visibleItems: [ClipboardItem]) -> [ClipboardItem] {
+        visibleItems.filter(\.isPinned) + visibleItems.filter { !$0.isPinned }
+    }
+}
+
 struct ClipboardPanelView: View {
     @ObservedObject var store: ClipboardStore
     @ObservedObject var pasteTargetController: PasteTargetController
@@ -269,11 +275,11 @@ struct ClipboardPanelView: View {
                 .minimumScaleFactor(0.8)
                 .layoutPriority(1)
 
-            Text("↑↓ · ↩ · P")
+            Text("↑↓ · ↩ · ⌘P")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
-                .help("Arrow keys select, Return uses a clip, P pins")
+                .help("Arrow keys select, Return uses a clip, Command-P pins")
 
             Spacer()
 
@@ -391,7 +397,7 @@ struct ClipboardPanelView: View {
     }
 
     private func moveSelection(by offset: Int) -> Bool {
-        let visibleItems = store.visibleItems(matching: searchText, filter: contentFilter)
+        let visibleItems = displayedItems()
         guard !visibleItems.isEmpty else {
             selectedItemID = nil
             return false
@@ -409,7 +415,7 @@ struct ClipboardPanelView: View {
     }
 
     private func copySelectedItem() -> Bool {
-        let visibleItems = store.visibleItems(matching: searchText, filter: contentFilter)
+        let visibleItems = displayedItems()
         guard let item = selectedItem() ?? visibleItems.first else {
             return false
         }
@@ -448,11 +454,11 @@ struct ClipboardPanelView: View {
             return nil
         }
 
-        return store.visibleItems(matching: searchText, filter: contentFilter).first { $0.id == selectedItemID }
+        return displayedItems().first { $0.id == selectedItemID }
     }
 
     private func reconcileSelection() {
-        let visibleItems = store.visibleItems(matching: searchText, filter: contentFilter)
+        let visibleItems = displayedItems()
 
         if let selectedItemID,
            visibleItems.contains(where: { $0.id == selectedItemID }) {
@@ -460,6 +466,12 @@ struct ClipboardPanelView: View {
         }
 
         selectedItemID = visibleItems.first?.id
+    }
+
+    private func displayedItems() -> [ClipboardItem] {
+        ClipboardPanelOrdering.displayedItems(
+            store.visibleItems(matching: searchText, filter: contentFilter)
+        )
     }
 
     private func focusSearch() {

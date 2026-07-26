@@ -211,8 +211,15 @@ struct ClipboardStorage {
             items[index].createdAt = min(items[index].createdAt, latestAllowedDate)
             items[index].lastCopiedAt = min(items[index].lastCopiedAt, latestAllowedDate)
             if var image = items[index].image, let imageData = image.data {
-                image.byteCount = imageData.count
-                image.contentHash = ClipboardImageProcessor.contentHash(for: imageData)
+                do {
+                    image = try ClipboardImageProcessor.process(
+                        ClipboardImageCandidate(data: imageData, isPNG: true)
+                    )
+                } catch {
+                    throw ClipboardStorageError.invalidImportedItem(
+                        error.localizedDescription
+                    )
+                }
                 items[index].image = image
             }
         }
@@ -408,10 +415,6 @@ struct ClipboardStorage {
                 guard data.count <= Self.maximumImportedImageBytes,
                       image.thumbnailData?.count ?? 0 <= Self.maximumImportedImageBytes else {
                     throw ClipboardStorageError.invalidImportedItem("image data is too large")
-                }
-                guard image.width >= 0, image.height >= 0,
-                      image.width <= 16_384, image.height <= 16_384 else {
-                    throw ClipboardStorageError.invalidImportedItem("image dimensions are invalid")
                 }
             }
         }

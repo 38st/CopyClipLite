@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import XCTest
 @testable import CopyClipLite
@@ -55,7 +56,7 @@ final class ClipboardStorageTests: XCTestCase {
 
     func testImageItemsRoundTripThroughStorage() throws {
         let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
-        let imageData = Data([0, 1, 2, 3])
+        let imageData = try makePNGData(width: 2, height: 2)
         let thumbnailData = Data([9, 8, 7])
         let image = ClipboardImagePayload(
             data: imageData,
@@ -115,8 +116,8 @@ final class ClipboardStorageTests: XCTestCase {
         let directory = try makeTemporaryDirectory()
         let storage = ClipboardStorage(appDirectory: directory)
         let exportURL = directory.appendingPathComponent("export.json")
-        let imageData = Data([0, 1, 2, 3])
-        let thumbnailData = Data([9, 8, 7])
+        let imageData = try makePNGData(width: 3, height: 4)
+        let thumbnailData = try makePNGData(width: 2, height: 2)
         let image = ClipboardImagePayload(
             data: imageData,
             thumbnailData: thumbnailData,
@@ -134,8 +135,11 @@ final class ClipboardStorageTests: XCTestCase {
         XCTAssertTrue(exportText.contains(thumbnailData.base64EncodedString()))
 
         let importedItem = try XCTUnwrap(storage.importItems(from: exportURL).first)
-        XCTAssertEqual(importedItem.image?.data, imageData)
-        XCTAssertEqual(importedItem.image?.thumbnailData, thumbnailData)
+        XCTAssertNotNil(importedItem.image?.data)
+        XCTAssertNotNil(importedItem.image?.thumbnailData)
+        XCTAssertEqual(importedItem.image?.width, 3)
+        XCTAssertEqual(importedItem.image?.height, 4)
+        XCTAssertNotNil(importedItem.image?.contentHash)
         XCTAssertNil(importedItem.image?.fileName)
         XCTAssertNil(importedItem.image?.thumbnailFileName)
     }
@@ -241,8 +245,9 @@ final class ClipboardStorageTests: XCTestCase {
         let sourceStorage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Source"))
         let destinationStorage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Destination"))
         let exportURL = directory.appendingPathComponent("portable.json")
+        let imageData = try makePNGData(width: 1, height: 1)
         sourceStorage.save([
-            ClipboardItem(image: ClipboardImagePayload(data: Data([1, 2, 3]), width: 1, height: 1))
+            ClipboardItem(image: ClipboardImagePayload(data: imageData, width: 1, height: 1))
         ])
         try sourceStorage.export(sourceStorage.load(), to: exportURL)
 
@@ -250,7 +255,37 @@ final class ClipboardStorageTests: XCTestCase {
         try destinationStorage.saveValidated(imported)
 
         XCTAssertEqual(destinationStorage.load().count, 1)
-        XCTAssertEqual(destinationStorage.imageData(for: destinationStorage.load()[0]), Data([1, 2, 3]))
+        XCTAssertNotNil(destinationStorage.imageData(for: destinationStorage.load()[0]))
+    }
+
+    func testImportRejectsUndecodableImageData() throws {
+        let directory = try makeTemporaryDirectory()
+        let storage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Store"))
+        let importURL = directory.appendingPathComponent("invalid-image.json")
+        let invalidData = Data([1, 2, 3])
+        let json = """
+        [{
+          "id":"00000000-0000-0000-0000-000000000001",
+          "text":"",
+          "contentKind":"image",
+          "image":{
+            "data":"\(invalidData.base64EncodedString())",
+            "width":1,
+            "height":1,
+            "byteCount":3
+          },
+          "copyCount":1
+        }]
+        """
+        try json.write(to: importURL, atomically: true, encoding: .utf8)
+
+        XCTAssertThrowsError(try storage.importItems(from: importURL)) { error in
+            guard let storageError = error as? ClipboardStorageError,
+                  case .invalidImportedItem = storageError else {
+                XCTFail("Expected invalid imported image, got \(error)")
+                return
+            }
+        }
     }
 
     private func makeTemporaryDirectory() throws -> URL {
@@ -263,5 +298,21 @@ final class ClipboardStorageTests: XCTestCase {
     private func permissions(at url: URL) throws -> Int {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         return attributes[.posixPermissions] as? Int ?? -1
+    }
+
+    private func makePNGData(width: Int, height: Int) throws -> Data {
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: width,
+            pixelsHigh: height,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ))
+        return try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
     }
 }

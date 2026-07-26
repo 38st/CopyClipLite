@@ -29,7 +29,11 @@ enum ClipboardImageProcessingError: LocalizedError, Sendable {
     }
 }
 
-actor ClipboardImageProcessingService {
+protocol ClipboardImageProcessing: Sendable {
+    func process(_ candidate: ClipboardImageCandidate) async throws -> ClipboardImagePayload
+}
+
+actor ClipboardImageProcessingService: ClipboardImageProcessing {
     func process(_ candidate: ClipboardImageCandidate) throws -> ClipboardImagePayload {
         try ClipboardImageProcessor.process(candidate)
     }
@@ -63,28 +67,41 @@ enum ClipboardImageProcessor {
             throw ClipboardImageProcessingError.dimensionsTooLarge
         }
 
-        let pngData: Data
-        if candidate.isPNG {
-            pngData = candidate.data
-        } else {
-            guard let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
-                  let converted = encodePNG(image) else {
-                throw ClipboardImageProcessingError.conversionFailed
-            }
-            pngData = converted
+        let normalizedOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: maximumDimension,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+        ]
+        guard let normalizedImage = CGImageSourceCreateThumbnailAtIndex(
+            source,
+            0,
+            normalizedOptions as CFDictionary
+        ),
+        normalizedImage.width > 0,
+        normalizedImage.height > 0,
+        normalizedImage.width <= maximumDimension,
+        normalizedImage.height <= maximumDimension,
+        normalizedImage.width.multipliedReportingOverflow(by: normalizedImage.height).overflow == false,
+        normalizedImage.width * normalizedImage.height <= maximumPixelCount,
+        let pngData = encodePNG(normalizedImage) else {
+            throw ClipboardImageProcessingError.conversionFailed
         }
         guard pngData.count <= maximumEncodedBytes else {
             throw ClipboardImageProcessingError.encodedDataTooLarge
         }
 
+        guard let normalizedSource = CGImageSourceCreateWithData(pngData as CFData, nil) else {
+            throw ClipboardImageProcessingError.conversionFailed
+        }
         let thumbnailOptions: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceThumbnailMaxPixelSize: 96,
-            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceCreateThumbnailWithTransform: false,
             kCGImageSourceShouldCacheImmediately: false,
         ]
         let thumbnailData = CGImageSourceCreateThumbnailAtIndex(
-            source,
+            normalizedSource,
             0,
             thumbnailOptions as CFDictionary
         ).flatMap(encodePNG)
@@ -92,8 +109,8 @@ enum ClipboardImageProcessor {
         return ClipboardImagePayload(
             data: pngData,
             thumbnailData: thumbnailData,
-            width: width,
-            height: height,
+            width: normalizedImage.width,
+            height: normalizedImage.height,
             byteCount: pngData.count,
             contentHash: contentHash(for: pngData)
         )

@@ -61,7 +61,7 @@ Four release/integration gates require owner-controlled or human action rather t
 
 - Unit/integration tests: 177 passed, 0 failed.
 - Complete strict-concurrency build with warnings as errors: passed.
-- Production-source coverage: 44.84%; `ClipboardStorage`: 86.05%; `ClipboardStore`: 87.20%.
+- Production-source coverage: 44.72%; `ClipboardStorage`: 86.05%; `ClipboardStore`: 86.65%.
 - Injected service coverage: `GlobalHotkeyController` 31.32%; `LoginItemController` 45.71%; `PasteTargetController` 81.84%; `UpdateChecker` 64.86%, each enforced in CI.
 - Performance/integration fixtures cover a 96 MiB transient live-image workload, a valid near-10 MiB image copy, a seven-image near-100 MiB transfer boundary, and a >75 MiB responsive import.
 - Shell syntax and workflow YAML parsing: passed.

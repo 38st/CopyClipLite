@@ -2400,7 +2400,10 @@ final class ClipboardStoreTests: XCTestCase {
         let artifact = try await preparation.value
         let elapsed = startedAt.duration(to: .now)
 
-        XCTAssertGreaterThanOrEqual(mainActorHeartbeats, 10)
+        // The transfer may finish in under 100 ms on faster runners. One
+        // heartbeat proves the measurement loop ran; the maximum-gap assertion
+        // below is the actual responsiveness guarantee.
+        XCTAssertGreaterThan(mainActorHeartbeats, 0)
         XCTAssertLessThan(maximumHeartbeatGap, .milliseconds(250))
         XCTAssertLessThan(elapsed, .seconds(8))
         XCTAssertEqual(artifact.preview.itemCount, 3)

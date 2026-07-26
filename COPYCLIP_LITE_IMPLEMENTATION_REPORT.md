@@ -53,15 +53,15 @@ Four release/integration gates require owner-controlled or human action rather t
 | 032 | Complete | Invalid manifest and complete image generation move together into a private recovery directory |
 | 033 | Repository and live AX inspection complete; manual VoiceOver/Reduce Motion gate | Accessibility focus follows selection; packaged build 24 exposes one row with named Copy/Pin/Delete actions and no duplicate pointer controls |
 | 034 | Complete | Onboarding uses actual hotkey status/formatter; only the menu-bar panel offers Open Main Window |
-| 035 | Repository complete; manual gesture interop gate | Native plain/rich text, URL-backed Finder image providers plus PNG data/promised-file representations, an explicit pointer drag handle, and JSON drop-import use immutable transfer validation without history mutation |
+| 035 | Repository complete; manual gesture interop gate | Native plain/rich text, URL-backed Finder image providers plus PNG data/promised-file representations, an explicit pointer drag handle, and cancellable JSON drop-import use immutable transfer validation without history mutation or stale-callback races |
 | 036 | Complete | Explicit assembly copies images/localizations; packaged extraction verifies `Bundle` lookup, `NSImage` decode, and every source localization file |
-| 037 | Repository suites complete; external/manual portions remain | 177 tests, lifecycle and real-event coverage, strict concurrency, package/installer harnesses, and per-service production coverage floors |
+| 037 | Repository suites complete; external/manual portions remain | 180 tests, lifecycle and real-event coverage, strict concurrency, package/installer harnesses, and per-service production coverage floors |
 
 ## Verification evidence
 
-- Unit/integration tests: 177 passed, 0 failed.
+- Unit/integration tests: 180 passed, 0 failed.
 - Complete strict-concurrency build with warnings as errors: passed.
-- Production-source coverage: 44.72%; `ClipboardStorage`: 86.05%; `ClipboardStore`: 86.65%.
+- Production-source coverage: 46.41%; `ClipboardStorage`: 86.05%; `ClipboardStore`: 87.50%.
 - Injected service coverage: `GlobalHotkeyController` 31.32%; `LoginItemController` 45.71%; `PasteTargetController` 81.84%; `UpdateChecker` 64.86%, each enforced in CI.
 - Performance/integration fixtures cover a 96 MiB transient live-image workload, a valid near-10 MiB image copy, a seven-image near-100 MiB transfer boundary, and a >75 MiB responsive import.
 - Shell syntax and workflow YAML parsing: passed.
@@ -72,4 +72,5 @@ Four release/integration gates require owner-controlled or human action rather t
 - Local final ZIP SHA-256: `3df431277d8cbec7a63bf743e9429d6959a2db1b0d2267251c2d53f22195d283`.
 - A fresh arm64 package build `24` launched successfully for live AX inspection; every visible clip exposed one row and exactly the named Copy/Pin/Delete actions, with no duplicate icon-button entries.
 - Drag-provider regressions load valid RTF/HTML payloads and verify that image providers advertise a decodable Finder-style file URL whose PNG bytes exactly match the stored image without mutating history.
+- Dropped-JSON regressions verify validated preview-plan identity, provider failure behavior, user-visible cancellation, and rejection of late callbacks without mutating history.
 - Local Gatekeeper rejection is expected for an ad-hoc build; distribution mode requires and verifies Developer ID signing, notarization, stapling, and Gatekeeper acceptance.

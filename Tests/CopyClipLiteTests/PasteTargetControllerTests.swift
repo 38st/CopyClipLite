@@ -76,10 +76,10 @@ private final class PasteObservationState {
 
     func observe(
         _ handler: @escaping @MainActor @Sendable (any PasteTargetApplication) -> Void
-    ) -> () -> Void {
+    ) -> PasteTargetActivationObservation {
         installCount += 1
         self.handler = handler
-        return { [weak self] in
+        return PasteTargetActivationObservation { [weak self] in
             self?.cancelCount += 1
             self?.handler = nil
         }

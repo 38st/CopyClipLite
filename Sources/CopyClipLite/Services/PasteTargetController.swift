@@ -23,6 +23,23 @@ extension NSRunningApplication: PasteTargetApplication {
     }
 }
 
+final class PasteTargetActivationObservation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancellation: (() -> Void)?
+
+    init(cancellation: @escaping () -> Void) {
+        self.cancellation = cancellation
+    }
+
+    func cancel() {
+        lock.lock()
+        let cancellation = cancellation
+        self.cancellation = nil
+        lock.unlock()
+        cancellation?()
+    }
+}
+
 @MainActor
 struct PasteTargetRuntime {
     var isAccessibilityGranted: () -> Bool
@@ -36,7 +53,7 @@ struct PasteTargetRuntime {
     }
     var observeApplicationActivations: (
         @escaping @MainActor @Sendable (any PasteTargetApplication) -> Void
-    ) -> () -> Void = { handler in
+    ) -> PasteTargetActivationObservation = { handler in
         let notificationCenter = NSWorkspace.shared.notificationCenter
         let observer = NotificationObserverToken(
             notificationCenter.addObserver(
@@ -54,7 +71,7 @@ struct PasteTargetRuntime {
                 }
             }
         )
-        return {
+        return PasteTargetActivationObservation {
             notificationCenter.removeObserver(observer.value)
         }
     }
@@ -95,7 +112,7 @@ final class PasteTargetController: ObservableObject {
     @Published private(set) var attemptState: PasteAttemptState = .idle
 
     private var lastExternalApplication: (any PasteTargetApplication)?
-    nonisolated(unsafe) private var cancelActivationObservation: (() -> Void)?
+    private var activationObservation: PasteTargetActivationObservation?
     private var pendingPasteTask: Task<Void, Never>?
     private var pendingPasteOwnsHiddenUI = false
     private var pasteRequestGeneration: UInt64 = 0
@@ -134,7 +151,7 @@ final class PasteTargetController: ObservableObject {
 
     deinit {
         pendingPasteTask?.cancel()
-        cancelActivationObservation?()
+        activationObservation?.cancel()
     }
 
     var targetApplicationName: String? {
@@ -286,7 +303,7 @@ final class PasteTargetController: ObservableObject {
     }
 
     private func installActivationObserver() {
-        cancelActivationObservation = runtime.observeApplicationActivations { [weak self] application in
+        activationObservation = runtime.observeApplicationActivations { [weak self] application in
             self?.handleActivation(application)
         }
     }

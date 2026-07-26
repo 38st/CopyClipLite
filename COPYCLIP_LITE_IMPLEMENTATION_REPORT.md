@@ -61,13 +61,13 @@ Four release/integration gates require owner-controlled or human action rather t
 
 - Unit/integration tests: 177 passed, 0 failed.
 - Complete strict-concurrency build with warnings as errors: passed.
-- Production-source coverage: 44.59%; `ClipboardStorage`: 86.05%; `ClipboardStore`: 86.07%.
-- Injected service coverage: `GlobalHotkeyController` 31.32%; `LoginItemController` 45.71%; `PasteTargetController` 81.32%; `UpdateChecker` 64.86%, each enforced in CI.
+- Production-source coverage: 44.67%; `ClipboardStorage`: 86.05%; `ClipboardStore`: 86.07%.
+- Injected service coverage: `GlobalHotkeyController` 31.32%; `LoginItemController` 45.71%; `PasteTargetController` 81.84%; `UpdateChecker` 64.86%, each enforced in CI.
 - Performance/integration fixtures cover a 96 MiB transient live-image workload, a valid near-10 MiB image copy, a seven-image near-100 MiB transfer boundary, and a >75 MiB responsive import.
 - Shell syntax and workflow YAML parsing: passed.
 - Release-contract and installer harnesses passed; CI now runs both, including all 14 installer cases.
 - Atomic installer probes removed stale files, preserved prior bundles across injected failures, and left no candidate/backup directories after success.
-- Local final ZIP verification passed for version `1.0.0` build `22`.
+- Local final ZIP verification passed for version `1.0.0` build `23`.
 - Final ZIP contains `x86_64` and `arm64`, passes `Bundle`/image/localization resource verification, has a valid ad-hoc signature, and passed fresh-extraction launch verification.
-- Local final ZIP SHA-256: `57d35ee23f2ea918f34aa45c140849d7d6f914b4b6203850354287c64c83f17a`.
+- Local final ZIP SHA-256: `3df431277d8cbec7a63bf743e9429d6959a2db1b0d2267251c2d53f22195d283`.
 - Local Gatekeeper rejection is expected for an ad-hoc build; distribution mode requires and verifies Developer ID signing, notarization, stapling, and Gatekeeper acceptance.

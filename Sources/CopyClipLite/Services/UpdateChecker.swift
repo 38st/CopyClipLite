@@ -1,5 +1,5 @@
 import AppKit
-@preconcurrency import Foundation
+import Foundation
 
 struct CopyClipVersion: Comparable, Equatable, Sendable {
     let major: Int

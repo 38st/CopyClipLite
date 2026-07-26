@@ -5,6 +5,8 @@ Audited commit: `db0a3d3de6f72b6e721d9025710bc6271efd3a65` (`main`)
 Scope: product behavior, functional correctness, reliability, data integrity, UX, performance, test coverage, packaging, and release readiness
 Explicit exclusion: security and vulnerability auditing
 
+Implementation follow-up: see `COPYCLIP_LITE_IMPLEMENTATION_REPORT.md` for the completed remediation status, verification evidence, and the remaining publication/manual-release gates.
+
 ## Executive conclusion
 
 CopyClip Lite is a coherent native macOS clipboard manager with a solid basic feature set and a reasonably clean small-codebase architecture. It compiles cleanly under strict Swift concurrency checks, all 33 current tests pass, and the staged app is a valid universal macOS binary.

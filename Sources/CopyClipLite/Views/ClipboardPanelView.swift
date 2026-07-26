@@ -25,9 +25,19 @@ enum ClipboardPanelOrdering {
     }
 }
 
+enum ClipboardPanelPresentationContext: Equatable {
+    case menuBar
+    case mainWindow
+
+    var showsOpenMainWindowButton: Bool {
+        self == .menuBar
+    }
+}
+
 struct ClipboardPanelView: View {
     @ObservedObject var store: ClipboardStore
     @ObservedObject var pasteTargetController: PasteTargetController
+    let presentationContext: ClipboardPanelPresentationContext
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var searchText = ""
@@ -35,6 +45,7 @@ struct ClipboardPanelView: View {
     @State private var selectedItemID: ClipboardItem.ID?
     @State private var isConfirmingClear = false
     @FocusState private var isSearchFocused: Bool
+    @AccessibilityFocusState private var accessibilityFocusedItemID: ClipboardItem.ID?
 
     var body: some View {
         let visible = store.visibleItems(matching: searchText, filter: contentFilter)
@@ -93,6 +104,9 @@ struct ClipboardPanelView: View {
         .onChange(of: visible.map(\.id)) { _, _ in
             reconcileSelection()
         }
+        .onChange(of: selectedItemID) { _, newID in
+            accessibilityFocusedItemID = newID
+        }
     }
 
     private var header: some View {
@@ -113,17 +127,19 @@ struct ClipboardPanelView: View {
 
             Spacer()
 
-            Button {
-                openWindow(id: "main")
-                NSApplication.shared.activate(ignoringOtherApps: true)
-                NotificationCenter.default.post(name: .copyClipFocusSearch, object: nil)
-            } label: {
-                Image(systemName: "macwindow")
-                    .frame(width: 22, height: 22)
+            if presentationContext.showsOpenMainWindowButton {
+                Button {
+                    openWindow(id: "main")
+                    NSApplication.shared.activate(ignoringOtherApps: true)
+                    NotificationCenter.default.post(name: .copyClipFocusSearch, object: nil)
+                } label: {
+                    Image(systemName: "macwindow")
+                        .frame(width: 22, height: 22)
+                }
+                .buttonStyle(.borderless)
+                .help("Open window")
+                .accessibilityLabel("Open main window")
             }
-            .buttonStyle(.borderless)
-            .help("Open window")
-            .accessibilityLabel("Open main window")
 
             Menu {
                 if store.isMonitoringEnabled {
@@ -232,6 +248,8 @@ struct ClipboardPanelView: View {
                     }
                     .padding(.horizontal, 12)
                     .padding(.bottom, 12)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Clipboard history")
                 }
                 .onChange(of: selectedItemID) { _, newID in
                     if let newID {
@@ -277,8 +295,12 @@ struct ClipboardPanelView: View {
             transform: item.contentKind == .text ? { transformation in
                 selectedItemID = item.id
                 store.copyWithTransformation(item, transformation: transformation)
-            } : nil
+            } : nil,
+            dragProvider: {
+                store.dragItemProvider(for: item)
+            }
         )
+        .accessibilityFocused($accessibilityFocusedItemID, equals: item.id)
     }
 
     private var footer: some View {

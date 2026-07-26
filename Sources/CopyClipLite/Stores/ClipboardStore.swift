@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import UniformTypeIdentifiers
 
 enum ClipboardImportStrategy: Sendable, Equatable {
     case merge
@@ -102,7 +103,7 @@ final class ClipboardStore: ObservableObject {
     private let usesWorkspaceSourceTracking: Bool
     private var lastPasteboardChangeCount: Int
     private var lastActiveApplication: ClipboardSourceApplication?
-    nonisolated(unsafe) private var workspaceActivationObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var workspaceActivationObserver: NotificationObserverToken?
     nonisolated(unsafe) private var timer: Timer?
     nonisolated(unsafe) private var pruneTimer: Timer?
     private var clearCopiedIndicatorTask: Task<Void, Never>?
@@ -269,10 +270,9 @@ final class ClipboardStore: ObservableObject {
         clearCopiedIndicatorTask?.cancel()
         monitoringResumeTask?.cancel()
         imageCaptureTasks.values.forEach { $0.cancel() }
-        persistWorkItem?.cancel()
         _ = persistenceGeneration.advance()
         if let workspaceActivationObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(workspaceActivationObserver)
+            NSWorkspace.shared.notificationCenter.removeObserver(workspaceActivationObserver.value)
         }
     }
 
@@ -374,6 +374,65 @@ final class ClipboardStore: ObservableObject {
             transferProgressText = nil
         }
         return try await transferService.prepareImport(from: url)
+    }
+
+    func prepareImport(
+        data: Data,
+        sourceFileName: String
+    ) async throws -> ClipboardImportArtifact {
+        guard !isTransferBusy else {
+            throw ClipboardStorageError.persistenceFailed
+        }
+        isTransferBusy = true
+        transferProgressText = "Validating dropped import…"
+        defer {
+            isTransferBusy = false
+            transferProgressText = nil
+        }
+        return try await transferService.prepareImport(
+            data: data,
+            sourceFileName: sourceFileName
+        )
+    }
+
+    func dragItemProvider(for item: ClipboardItem) -> NSItemProvider {
+        switch item.contentKind {
+        case .text:
+            let provider = NSItemProvider(object: item.text as NSString)
+            provider.suggestedName = "CopyClip Text"
+            if let rtfData = item.rtfData {
+                provider.registerDataRepresentation(
+                    forTypeIdentifier: UTType.rtf.identifier,
+                    visibility: .all
+                ) { completion in
+                    completion(rtfData, nil)
+                    return nil
+                }
+            }
+            if let htmlData = item.htmlData {
+                provider.registerDataRepresentation(
+                    forTypeIdentifier: UTType.html.identifier,
+                    visibility: .all
+                ) { completion in
+                    completion(htmlData, nil)
+                    return nil
+                }
+            }
+            return provider
+        case .image:
+            let provider = NSItemProvider()
+            provider.suggestedName = "CopyClip Image.png"
+            let storage = storage
+            provider.registerDataRepresentation(
+                forTypeIdentifier: UTType.png.identifier,
+                visibility: .all
+            ) { completion in
+                let data = storage.imageData(for: item)
+                completion(data, data == nil ? ClipboardStorageError.missingImageData : nil)
+                return nil
+            }
+            return provider
+        }
     }
 
     func importProjection(
@@ -990,22 +1049,24 @@ final class ClipboardStore: ObservableObject {
 
     private func installWorkspaceSourceTrackingIfNeeded() {
         guard usesWorkspaceSourceTracking else { return }
-        workspaceActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            guard let runningApplication = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
-                    as? NSRunningApplication else { return }
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                let previousApplication = self.lastActiveApplication
-                self.pollPasteboardForChanges(sourceApplicationOverride: previousApplication)
-                self.lastActiveApplication = ClipboardSourceApplication(
-                    runningApplication: runningApplication
-                )
+        workspaceActivationObserver = NotificationObserverToken(
+            NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didActivateApplicationNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let runningApplication = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                        as? NSRunningApplication else { return }
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    let previousApplication = self.lastActiveApplication
+                    self.pollPasteboardForChanges(sourceApplicationOverride: previousApplication)
+                    self.lastActiveApplication = ClipboardSourceApplication(
+                        runningApplication: runningApplication
+                    )
+                }
             }
-        }
+        )
     }
 
     private func clearMonitoringPause() {

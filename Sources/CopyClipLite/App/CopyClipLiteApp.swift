@@ -57,7 +57,11 @@ struct CopyClipLiteApp: App {
 
     var body: some Scene {
         Window("CopyClip Lite", id: "main") {
-            RootWindowView(store: store, pasteTargetController: pasteTargetController)
+            RootWindowView(
+                store: store,
+                pasteTargetController: pasteTargetController,
+                hotkeyController: hotkeyController
+            )
                 .frame(minWidth: 390, idealWidth: 420, minHeight: 560, idealHeight: 620)
                 .onAppear { appDelegate.store = store }
                 .background(
@@ -70,7 +74,11 @@ struct CopyClipLiteApp: App {
         .defaultSize(width: 420, height: 620)
 
         MenuBarExtra {
-            ClipboardPanelView(store: store, pasteTargetController: pasteTargetController)
+            ClipboardPanelView(
+                store: store,
+                pasteTargetController: pasteTargetController,
+                presentationContext: .menuBar
+            )
                 .frame(width: 380, height: 520)
         } label: {
             Label("CopyClip Lite", systemImage: "clipboard")

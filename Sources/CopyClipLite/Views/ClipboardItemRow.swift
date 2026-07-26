@@ -13,6 +13,7 @@ struct ClipboardItemRow: View {
     let delete: () -> Void
     let ignoreApplication: (() -> Void)?
     let transform: ((TextTransformation) -> Void)?
+    let dragProvider: () -> NSItemProvider
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -69,6 +70,13 @@ struct ClipboardItemRow: View {
             .accessibilityLabel(item.previewText)
             .accessibilityValue(accessibilityValue)
             .accessibilityAddTraits(isSelected ? .isSelected : [])
+            .accessibilityHint("Activate to use this clip.")
+            .accessibilityAction(named: "Copy clip", copy)
+            .accessibilityAction(
+                named: item.isPinned ? "Unpin clip" : "Pin clip",
+                togglePin
+            )
+            .accessibilityAction(named: "Delete clip", delete)
 
             VStack(spacing: 6) {
                 Button(action: togglePin) {
@@ -122,6 +130,7 @@ struct ClipboardItemRow: View {
             Button("Delete", role: .destructive, action: delete)
         }
         .id(rowID)
+        .onDrag(dragProvider)
     }
 
     private var backgroundColor: Color {

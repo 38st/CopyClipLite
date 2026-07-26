@@ -289,6 +289,14 @@ struct ClipboardStorage: @unchecked Sendable {
             throw ClipboardStorageError.importTooLarge
         }
 
+        return try importItems(data: data)
+    }
+
+    func importItems(data: Data) throws -> [ClipboardItem] {
+        guard data.count <= Self.maximumImportBytes else {
+            throw ClipboardStorageError.importTooLarge
+        }
+
         let decoder = JSONDecoder()
         let transferItems: [ClipboardTransferItem]
         let isCurrentFormat: Bool

@@ -15,7 +15,7 @@ jobs:
       - name: Validate shell scripts
         run: bash -n script/*.sh
       - name: Run tests
-        run: swift test
+        run: ./script/check_coverage.sh
       - name: Enforce strict concurrency warnings
         run: swift build -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
       - name: Build local release artifact

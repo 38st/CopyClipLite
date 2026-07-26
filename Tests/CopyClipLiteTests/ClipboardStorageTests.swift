@@ -379,6 +379,18 @@ final class ClipboardStorageTests: XCTestCase {
         }
     }
 
+    func testExportDataCanBeValidatedDirectlyForDroppedImport() throws {
+        let directory = try makeTemporaryDirectory()
+        let storage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Store"))
+        let exportURL = directory.appendingPathComponent("drop.json")
+        storage.save([ClipboardItem(text: "dropped")])
+        try storage.export(storage.load(), to: exportURL)
+
+        let imported = try storage.importItems(data: Data(contentsOf: exportURL))
+
+        XCTAssertEqual(imported.map(\.text), ["dropped"])
+    }
+
     func testExportPreflightsSameVersionItemLimitBeforeWriting() throws {
         let directory = try makeTemporaryDirectory()
         let storage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Store"))

@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @ObservedObject var store: ClipboardStore
@@ -252,7 +253,7 @@ struct SettingsView: View {
             }
 
             Section("Transfer") {
-                Text("Exports are unencrypted JSON. Imports are validated, previewed, and backed up before they can change your current history.")
+                Text("Exports are unencrypted JSON. Imports are validated, previewed, and backed up before they can change your current history. You can also drop a CopyClip JSON export here.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -281,6 +282,11 @@ struct SettingsView: View {
                     SettingsErrorText(transferError)
                 }
             }
+            .onDrop(
+                of: [UTType.json.identifier],
+                isTargeted: nil,
+                perform: handleDroppedImport
+            )
 
             Section("Updates") {
                 LabeledContent("Installed version", value: updateChecker.currentVersion)
@@ -390,6 +396,50 @@ struct SettingsView: View {
                 transferError = error.localizedDescription
             }
         }
+    }
+
+    private func handleDroppedImport(_ providers: [NSItemProvider]) -> Bool {
+        guard !store.isTransferBusy,
+              let provider = providers.first(where: {
+                  $0.hasItemConformingToTypeIdentifier(UTType.json.identifier)
+              }) else {
+            return false
+        }
+
+        transferMessage = nil
+        transferError = nil
+        let sourceFileName = provider.suggestedName ?? "Dropped history.json"
+        provider.loadDataRepresentation(
+            forTypeIdentifier: UTType.json.identifier
+        ) { data, error in
+            Task { @MainActor in
+                if let error {
+                    transferError = error.localizedDescription
+                    return
+                }
+                guard let data else {
+                    transferError = "The dropped history could not be read."
+                    return
+                }
+                transferTask = Task {
+                    defer { transferTask = nil }
+                    do {
+                        pendingImportArtifact = try await store.prepareImport(
+                            data: data,
+                            sourceFileName: sourceFileName
+                        )
+                        isConfirmingImport = true
+                    } catch is CancellationError {
+                        clearPendingImport()
+                        transferMessage = "Import cancelled."
+                    } catch {
+                        clearPendingImport()
+                        transferError = error.localizedDescription
+                    }
+                }
+            }
+        }
+        return true
     }
 
     private func performImport(strategy: ClipboardImportStrategy) {

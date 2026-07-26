@@ -51,7 +51,7 @@ final class PasteTargetController: ObservableObject {
     @Published private(set) var lastError: String?
 
     private var lastExternalApplication: (any PasteTargetApplication)?
-    nonisolated(unsafe) private var activationObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var activationObserver: NotificationObserverToken?
     private var pendingPasteTask: Task<Void, Never>?
     private var pasteRequestGeneration: UInt64 = 0
     private var isPreservingTargetForSystemSettings = false
@@ -87,7 +87,7 @@ final class PasteTargetController: ObservableObject {
     deinit {
         pendingPasteTask?.cancel()
         if let activationObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(activationObserver)
+            NSWorkspace.shared.notificationCenter.removeObserver(activationObserver.value)
         }
     }
 
@@ -195,17 +195,19 @@ final class PasteTargetController: ObservableObject {
     }
 
     private func installActivationObserver() {
-        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
-                    as? NSRunningApplication else { return }
-            MainActor.assumeIsolated {
-                self?.handleActivation(application)
+        activationObserver = NotificationObserverToken(
+            NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didActivateApplicationNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
+                        as? NSRunningApplication else { return }
+                MainActor.assumeIsolated {
+                    self?.handleActivation(application)
+                }
             }
-        }
+        )
     }
 
     private func handleActivation(_ application: any PasteTargetApplication) {

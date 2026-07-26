@@ -1,7 +1,17 @@
 import AppKit
 import SwiftUI
 
+enum WelcomeContent {
+    static func hotkeyDetail(isRegistered: Bool, displayString: String) -> String {
+        if isRegistered {
+            return "Use the menu bar or press \(displayString)."
+        }
+        return "Use the menu bar. The global shortcut is currently unavailable."
+    }
+}
+
 struct WelcomeView: View {
+    @ObservedObject var hotkeyController: GlobalHotkeyController
     let continueAction: () -> Void
 
     var body: some View {
@@ -28,7 +38,7 @@ struct WelcomeView: View {
                 WelcomeRow(
                     systemImage: "menubar.rectangle",
                     title: "Open it instantly",
-                    detail: "Use the menu bar or press ⌥⌘V."
+                    detail: hotkeyDetail
                 )
                 WelcomeRow(
                     systemImage: "lock.doc",
@@ -66,6 +76,13 @@ struct WelcomeView: View {
         .padding(28)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.regularMaterial)
+    }
+
+    private var hotkeyDetail: String {
+        WelcomeContent.hotkeyDetail(
+            isRegistered: hotkeyController.isRegistered,
+            displayString: hotkeyController.config.displayString
+        )
     }
 }
 

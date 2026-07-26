@@ -7,6 +7,7 @@ CopyClip Lite is a lightweight native macOS clipboard history utility. It runs f
 - Menu bar panel with searchable clipboard history
 - Plain text plus RTF/HTML text capture; PNG, TIFF, JPEG, HEIC/HEIF, and Finder-copied local image capture through one normalized PNG pipeline
 - One-click copy back to the pasteboard
+- Native drag-out for plain/rich text and PNG images, plus validated JSON drop-import in Settings
 - Keyboard navigation with arrow keys and Return to copy the selected clip
 - Global Option-Command-V hotkey to open clipboard search
 - Pin, delete, clear, timed pause, and quit controls
@@ -21,6 +22,7 @@ CopyClip Lite is a lightweight native macOS clipboard history utility. It runs f
 - Launch at Login setting for menu-bar startup
 - Native macOS app bundle with Finder, Spotlight, Launchpad, and menu-bar access
 - First-run welcome window
+- VoiceOver-aware keyboard selection, named row actions, and Reduce Motion-aware scrolling
 
 ## Privacy
 

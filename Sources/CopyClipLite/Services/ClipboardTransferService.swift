@@ -49,6 +49,21 @@ actor ClipboardTransferService {
         )
     }
 
+    func prepareImport(data: Data, sourceFileName: String) throws -> ClipboardImportArtifact {
+        try Task.checkCancellation()
+        let items = try storage.importItems(data: data)
+        try Task.checkCancellation()
+        return ClipboardImportArtifact(
+            sourceFileName: sourceFileName,
+            items: items,
+            preview: ClipboardImportPreview(
+                itemCount: items.count,
+                textCount: items.filter { $0.contentKind == .text }.count,
+                imageCount: items.filter { $0.contentKind == .image }.count
+            )
+        )
+    }
+
     func commitImport(
         currentItems: [ClipboardItem],
         candidateItems: [ClipboardItem]

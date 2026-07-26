@@ -89,6 +89,7 @@ struct ClipboardItemRow: View {
                 }
                 .buttonStyle(.borderless)
                 .help(item.isPinned ? "Unpin" : "Pin")
+                .accessibilityHidden(true)
 
                 Button(role: .destructive, action: delete) {
                     Label("Delete clip", systemImage: "trash")
@@ -97,12 +98,9 @@ struct ClipboardItemRow: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Delete")
+                .accessibilityHidden(true)
             }
             .foregroundStyle(.secondary)
-            // The row exposes these operations as named accessibility actions.
-            // Hide the duplicate icon controls from the accessibility tree while
-            // keeping them available to pointer users.
-            .accessibilityHidden(true)
         }
         .padding(10)
         .background(

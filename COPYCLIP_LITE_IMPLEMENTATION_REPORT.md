@@ -12,7 +12,7 @@ Four release/integration gates require owner-controlled or human action rather t
 
 1. `38st/CopyClipLite` is still private. It must be made public, or the distribution build must use another public release feed, before TASK-005 can be operational for end users.
 2. A notarized distribution release requires the repository’s Developer ID/notary secrets and an owner-selected `vX.Y.Z` tag. The workflow now blocks publication unless tag, plist version, build number, signature, notarization ticket, Gatekeeper, architectures, launch test, and final ZIP all verify.
-3. TASK-033/TASK-037 include a manual VoiceOver and Reduce Motion release matrix. The implementation and automated event/order/lifecycle checks are complete; the assistive-technology QA matrix is in `ACCESSIBILITY_TEST_MATRIX.md`.
+3. TASK-033/TASK-037 include a manual VoiceOver and Reduce Motion release matrix. The implementation, automated event/order/lifecycle checks, and a live packaged-app AX-tree inspection are complete; spoken VoiceOver and physical Reduce Motion QA remain in `ACCESSIBILITY_TEST_MATRIX.md`.
 4. TASK-035’s item-provider contract is automated, but actual drops into representative macOS apps and Finder remain a manual interoperability check.
 
 ## Task status
@@ -51,7 +51,7 @@ Four release/integration gates require owner-controlled or human action rather t
 | 030 | Complete | The injected Login Item adapter covers deterministic status/request transitions, including approval-pending disable and transition recovery |
 | 031 | Complete | Mode validation precedes side effects; package never kills the app; a verified sibling bundle is exchanged atomically with rollback, covered by a 14-case harness now run in CI |
 | 032 | Complete | Invalid manifest and complete image generation move together into a private recovery directory |
-| 033 | Repository complete; manual matrix gate | Accessibility focus follows selection; rows expose selected state and named actions while duplicate pointer controls are hidden from the accessibility tree |
+| 033 | Repository and live AX inspection complete; manual VoiceOver/Reduce Motion gate | Accessibility focus follows selection; packaged build 24 exposes one row with named Copy/Pin/Delete actions and no duplicate pointer controls |
 | 034 | Complete | Onboarding uses actual hotkey status/formatter; only the menu-bar panel offers Open Main Window |
 | 035 | Repository complete; manual interop gate | Native plain/rich text, PNG data/file representations, and JSON drop-import use immutable transfer validation without history mutation |
 | 036 | Complete | Explicit assembly copies images/localizations; packaged extraction verifies `Bundle` lookup, `NSImage` decode, and every source localization file |
@@ -70,4 +70,5 @@ Four release/integration gates require owner-controlled or human action rather t
 - Local final ZIP verification passed for version `1.0.0` build `23`.
 - Final ZIP contains `x86_64` and `arm64`, passes `Bundle`/image/localization resource verification, has a valid ad-hoc signature, and passed fresh-extraction launch verification.
 - Local final ZIP SHA-256: `3df431277d8cbec7a63bf743e9429d6959a2db1b0d2267251c2d53f22195d283`.
+- A fresh arm64 package build `24` launched successfully for live AX inspection; every visible clip exposed one row and exactly the named Copy/Pin/Delete actions, with no duplicate icon-button entries.
 - Local Gatekeeper rejection is expected for an ad-hoc build; distribution mode requires and verifies Developer ID signing, notarization, stapling, and Gatekeeper acceptance.

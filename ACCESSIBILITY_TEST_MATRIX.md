@@ -1,8 +1,8 @@
 # CopyClip Lite Accessibility Verification Matrix
 
-Automated coverage verifies real keyboard-event routing with a text first responder, pinned-first order, first/middle/last deletion neighbors, copy-induced selection scrolling, presentation context, and lifecycle policy. The production build also compiles the accessibility focus/actions and the nonanimated Reduce Motion branch. Those checks do not prove spoken VoiceOver output or physical animation behavior.
+Automated coverage verifies real keyboard-event routing with a text first responder, pinned-first order, first/middle/last deletion neighbors, copy-induced selection scrolling, presentation context, and lifecycle policy. The production build also compiles the accessibility focus/actions and the nonanimated Reduce Motion branch. A live AX-tree inspection of the packaged arm64 build 24 on 2026-07-26 confirmed that each visible clip is represented by one selected/unselected row with Copy, Pin, and Delete named actions, without duplicate icon-button entries. Those checks do not prove spoken VoiceOver output or physical animation behavior.
 
-Manual status as of 2026-07-26: **not executed**. Complete this matrix with VoiceOver enabled before a public release and record the results in release QA notes.
+VoiceOver/Reduce Motion manual status as of 2026-07-26: **not executed**. Complete this matrix with VoiceOver enabled before a public release and record the results in release QA notes.
 
 | Workflow | Expected result |
 |---|---|

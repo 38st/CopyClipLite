@@ -11,7 +11,9 @@ case "$MODE" in
     ;;
 esac
 
-ROOT_DIR="${COPYCLIP_ROOT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="${COPYCLIP_ROOT_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+source "$SCRIPT_DIR/release_contract.sh"
 APP_NAME="CopyClipLite"
 APP_DISPLAY_NAME="${COPYCLIP_APP_DISPLAY_NAME:-CopyClip Lite}"
 BUNDLE_ID="${COPYCLIP_BUNDLE_ID:-io.github.38st.CopyClipLite}"
@@ -41,8 +43,7 @@ if [[ ! "$BUNDLE_ID" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]]; then
   echo "Invalid bundle identifier: $BUNDLE_ID" >&2
   exit 3
 fi
-if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "Invalid app version: $APP_VERSION" >&2
+if ! copyclip_require_release_version "$APP_VERSION" "App version"; then
   exit 3
 fi
 if [[ ! "$APP_BUILD_NUMBER" =~ ^[0-9]+$ ]]; then
@@ -72,8 +73,14 @@ rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS" "$APP_RESOURCES"
 cp "$BUILD_BINARY" "$APP_BINARY"
 chmod +x "$APP_BINARY"
-cp "$ROOT_DIR/Sources/CopyClipLite/Resources/CopyClipIcon.icns" "$APP_RESOURCES/CopyClipIcon.icns"
-cp "$ROOT_DIR/Sources/CopyClipLite/Resources/CopyClipLogo.png" "$APP_RESOURCES/CopyClipLogo.png"
+SOURCE_RESOURCES="$ROOT_DIR/Sources/CopyClipLite/Resources"
+cp "$SOURCE_RESOURCES/CopyClipIcon.icns" "$APP_RESOURCES/CopyClipIcon.icns"
+cp "$SOURCE_RESOURCES/CopyClipLogo.png" "$APP_RESOURCES/CopyClipLogo.png"
+while IFS= read -r -d '' localization_dir; do
+  relative_path="${localization_dir#"$SOURCE_RESOURCES/"}"
+  mkdir -p "$(dirname "$APP_RESOURCES/$relative_path")"
+  cp -R "$localization_dir" "$APP_RESOURCES/$relative_path"
+done < <(find "$SOURCE_RESOURCES" -type d -name '*.lproj' -print0)
 
 cat >"$INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

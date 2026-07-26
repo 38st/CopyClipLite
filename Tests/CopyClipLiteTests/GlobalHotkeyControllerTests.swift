@@ -74,6 +74,84 @@ final class GlobalHotkeyControllerTests: XCTestCase {
         )
     }
 
+    func testStandardMultiModifierEditingAndSystemShortcutsAreRejectedSpecifically() {
+        let unsafeShortcuts = [
+            HotkeyConfig(
+                keyCode: kVK_ANSI_V,
+                modifiers: cmdKey | optionKey | shiftKey
+            ),
+            HotkeyConfig(keyCode: kVK_Escape, modifiers: cmdKey | optionKey),
+            HotkeyConfig(keyCode: kVK_ANSI_Q, modifiers: cmdKey | controlKey),
+            HotkeyConfig(keyCode: kVK_Space, modifiers: cmdKey | controlKey),
+            HotkeyConfig(keyCode: kVK_ANSI_F, modifiers: cmdKey | controlKey),
+            HotkeyConfig(keyCode: kVK_ANSI_D, modifiers: cmdKey | optionKey),
+            HotkeyConfig(keyCode: kVK_ANSI_H, modifiers: cmdKey | optionKey),
+            HotkeyConfig(keyCode: kVK_ANSI_M, modifiers: cmdKey | optionKey),
+            HotkeyConfig(keyCode: kVK_Space, modifiers: cmdKey | optionKey),
+        ]
+
+        for shortcut in unsafeShortcuts {
+            XCTAssertEqual(
+                shortcut.validationError,
+                .unsafeSystemShortcut,
+                shortcut.displayString
+            )
+            XCTAssertEqual(
+                shortcut.validationError?.localizedDescription,
+                "Choose a shortcut that does not replace a standard editing or macOS system command."
+            )
+        }
+    }
+
+    func testMultiModifierSafetyRulesDoNotOverblockNearbyShortcuts() {
+        let safeShortcuts = [
+            HotkeyConfig.default,
+            HotkeyConfig(keyCode: kVK_ANSI_B, modifiers: cmdKey | optionKey),
+            HotkeyConfig(keyCode: kVK_ANSI_K, modifiers: cmdKey | controlKey),
+            HotkeyConfig(
+                keyCode: kVK_ANSI_B,
+                modifiers: cmdKey | optionKey | shiftKey
+            ),
+            HotkeyConfig(keyCode: kVK_F12, modifiers: cmdKey | optionKey),
+        ]
+
+        for shortcut in safeShortcuts {
+            XCTAssertNil(shortcut.validationError, shortcut.displayString)
+        }
+    }
+
+    func testInjectedNonUSLayoutLabelsPreserveDeterministicModifierOrder() {
+        let config = HotkeyConfig(
+            keyCode: kVK_ANSI_Q,
+            modifiers: controlKey | optionKey | shiftKey | cmdKey
+        )
+        var requestedKeyCodes: [Int] = []
+
+        let displayString = config.displayString { keyCode in
+            requestedKeyCodes.append(keyCode)
+            return "a"
+        }
+
+        XCTAssertEqual(requestedKeyCodes, [kVK_ANSI_Q])
+        XCTAssertEqual(displayString, "⌃⌥⇧⌘A")
+    }
+
+    func testInjectedLayoutLabelFallsBackForWhitespaceOrControlCharacters() {
+        let config = HotkeyConfig(
+            keyCode: kVK_ANSI_Q,
+            modifiers: cmdKey | optionKey
+        )
+
+        XCTAssertEqual(
+            config.displayString(layoutLabelProvider: { _ in " " }),
+            "⌥⌘Q"
+        )
+        XCTAssertEqual(
+            config.displayString(layoutLabelProvider: { _ in "\n" }),
+            "⌥⌘Q"
+        )
+    }
+
     func testInvalidPersistedShortcutFallsBackToDefault() throws {
         let suiteName = "GlobalHotkeyControllerTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -150,5 +228,27 @@ final class GlobalHotkeyControllerTests: XCTestCase {
 
         XCTAssertTrue(controller.isRegistered)
         XCTAssertEqual(registrar.activeConfig, .default)
+    }
+
+    func testRepeatedInjectedRegistrarLifecycleDoesNotCreateRetainCycles() {
+        for _ in 0..<100 {
+            weak var releasedController: GlobalHotkeyController?
+            weak var releasedRegistrar: FakeHotkeyRegistrar?
+
+            autoreleasepool {
+                let registrar = FakeHotkeyRegistrar()
+                var controller: GlobalHotkeyController? = GlobalHotkeyController(
+                    config: .default,
+                    registrar: registrar
+                )
+                releasedController = controller
+                releasedRegistrar = registrar
+                XCTAssertTrue(controller?.isRegistered == true)
+                controller = nil
+            }
+
+            XCTAssertNil(releasedController)
+            XCTAssertNil(releasedRegistrar)
+        }
     }
 }

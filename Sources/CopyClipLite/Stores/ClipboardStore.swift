@@ -120,6 +120,7 @@ final class ClipboardStore: ObservableObject {
     @Published private(set) var lastCopiedID: ClipboardItem.ID?
     @Published private(set) var storageErrorMessage: String?
     @Published private(set) var captureWarning: String?
+    @Published private(set) var pasteboardWriteWarning: String?
     @Published private(set) var isTransferBusy = false
     @Published private(set) var transferProgressText: String?
     @Published private var thumbnailCache: [ClipboardItem.ID: Data] = [:]
@@ -651,7 +652,9 @@ final class ClipboardStore: ObservableObject {
             return false
         }
         if case let .degraded(optionalTypes) = writeResult {
-            captureWarning = "The clip was copied without optional formats: \(optionalTypes.joined(separator: ", "))."
+            pasteboardWriteWarning = "The clip was copied without optional formats: \(optionalTypes.joined(separator: ", "))."
+        } else {
+            pasteboardWriteWarning = nil
         }
         storageErrorMessage = nil
 
@@ -1400,6 +1403,10 @@ final class ClipboardStore: ObservableObject {
 
     func dismissCaptureWarning() {
         captureWarning = nil
+    }
+
+    func dismissPasteboardWriteWarning() {
+        pasteboardWriteWarning = nil
     }
 
     private func mergedItems(existing: [ClipboardItem], imported: [ClipboardItem]) -> [ClipboardItem] {

@@ -6,13 +6,14 @@ Excluded throughout: security and vulnerability auditing
 
 ## Outcome
 
-All repository implementation work in the 37-task backlog is complete. A second multi-agent completion audit found and closed remaining gaps in import serialization, fault-boundary coverage, image-type validation, bounded capture scheduling, latest-capture semantics, strict transfer DTOs, Direct Paste state, hotkey safety, keyboard routing, updater responses, installer replacement, drag-out file representations, and honest production-source coverage reporting.
+All repository implementation work in the 37-task backlog is complete. Two multi-agent completion passes found and closed remaining gaps in import serialization, exact cleanup/relaunch image copyability, fault-boundary coverage, image-type validation, bounded capture scheduling, live-image memory bounds, transfer limits/responsiveness, malformed current envelopes, warning ownership, Direct Paste clocks/observation, hotkey safety/layouts, real event routing, lifecycle behavior, release artifact verification, installer replacement, drag-out file representations, resource loading, and honest production-source coverage reporting.
 
-Three release gates require owner-controlled external action rather than more repository code:
+Four release/integration gates require owner-controlled or human action rather than more repository code:
 
 1. `38st/CopyClipLite` is still private. It must be made public, or the distribution build must use another public release feed, before TASK-005 can be operational for end users.
 2. A notarized distribution release requires the repository’s Developer ID/notary secrets and an owner-selected `vX.Y.Z` tag. The workflow now blocks publication unless tag, plist version, build number, signature, notarization ticket, Gatekeeper, architectures, launch test, and final ZIP all verify.
-3. TASK-033 includes a manual VoiceOver release matrix. The implementation and automated model checks are complete; the human QA matrix is in `ACCESSIBILITY_TEST_MATRIX.md`.
+3. TASK-033/TASK-037 include a manual VoiceOver and Reduce Motion release matrix. The implementation and automated event/order/lifecycle checks are complete; the assistive-technology QA matrix is in `ACCESSIBILITY_TEST_MATRIX.md`.
+4. TASK-035’s item-provider contract is automated, but actual drops into representative macOS apps and Finder remain a manual interoperability check.
 
 ## Task status
 
@@ -27,44 +28,46 @@ Three release gates require owner-controlled external action rather than more re
 | 007 | Complete | Text and image identity are separated throughout deduplication |
 | 008 | Complete | ImageIO fully decodes, type-checks, orients, validates, and canonicalizes every supported image to PNG with a required thumbnail |
 | 009 | Complete | One active decode plus a newest-seven FIFO, generation invalidation, cooperative cancellation, and termination cancellation prevent stale or unbounded work |
-| 010 | Complete | Successful saves externalize the live model while failed saves retain inline fallback |
-| 011 | Complete | Image copy requires PNG, never eagerly decodes TIFF on the main actor, and caps supported images at 4,096² pixels with tested five-second/512 MiB processing budgets |
-| 012 | Complete | Versioned transfer documents preflight count, encoded size, timestamps, required fields, hashes, and decodable canonical images before writing |
-| 013 | Complete | A transfer actor prepares one immutable import plan; frozen projections and serialized commit apply that exact artifact while conflicting mutation paths are disabled and a near-limit responsiveness test keeps the main actor running |
-| 014 | Complete | Hotkey validation/replacement is transactional and rejects Shift-only and unsafe single-modifier editing/navigation shortcuts |
-| 015 | Complete | Persisted configs, handler lifecycle, recording suspension, ownership, and keyboard-layout labels are hardened |
-| 016 | Complete | One pure tested event router and pinned-first displayed order drive editing-safe navigation, selection, copy, pin, and delete |
-| 017 | Complete | Direct Paste has an explicit attempt state, copied/not-copied failure semantics, target preservation, generation cancellation, permission recheck, and UI restoration |
-| 018 | Code and local artifact complete; distribution gate | Full-history monotonic CI build, exact tag/version assertion, final extracted ZIP verification, checksum, notarization/Gatekeeper checks |
+| 010 | Complete | Successful saves externalize the live model while failed saves retain inline fallback; a 96 MiB transient stress proves zero committed inline bytes and bounded settled RSS |
+| 011 | Complete | Image copy requires PNG, never eagerly decodes TIFF on the main actor, and has measured maximum-pixel and near-10 MiB copy latency/RSS budgets |
+| 012 | Complete | Versioned transfer documents preflight count, encoded size, timestamps, required fields, hashes, and canonical images; seven near-limit PNGs round-trip and the first aggregate overflow is blocked before writing |
+| 013 | Complete | A transfer actor prepares one immutable plan; a >75 MiB import fixture proves main-actor heartbeats, a 250 ms maximum gap, and an eight-second deadline |
+| 014 | Complete | Hotkey replacement is transactional and rejects Shift-only, unsafe editing/navigation, and defined standard multi-modifier macOS commands |
+| 015 | Complete | Persisted configs, handler lifecycle, recording suspension, ownership, and injected non-US keyboard-layout labels are hardened |
+| 016 | Complete | The live coordinator’s tested `NSEvent`/`NSTextView` route and pinned-first order drive editing-safe navigation, selection, copy, pin, and delete |
+| 017 | Complete | Direct Paste has explicit attempt state, copied/not-copied semantics, target preservation, generation cancellation, injected monotonic sleep/activation observation, permission recheck, and UI restoration |
+| 018 | Code and local artifact complete; distribution gate | One X.Y.Z contract, full-history monotonic build, exact tag/plist assertion, reproducible final ZIP, draft-upload download/SHA verification, notarization/Gatekeeper gates |
 | 019 | Complete | Failed image processing records the captured text/RTF/HTML snapshot once |
 | 020 | Complete | Plain/rich limits are aligned and visible; oversized optional rich formats degrade with an exact warning |
 | 021 | Complete | Out-of-order duplicate images use latest representation semantics and legacy raw PNG hashes migrate to the canonical hash |
 | 022 | Complete | Frozen Merge/Replace plans disclose added, deduplicated, expired, over-limit, pinned, and final counts that match the committed result |
 | 023 | Complete | PNG, TIFF, JPEG, HEIC/HEIF, Finder image files, plain text, and RTF/HTML-only text have defined priority and regression coverage |
 | 024 | Complete | Missing/corrupt thumbnails repair from full image; row rendering uses a bounded asynchronous cache |
-| 025 | Complete | Injected pasteboard writer returns success/degraded/failure and history mutates only after required writes succeed |
-| 026 | Complete | Strict transfer DTO rejects malformed current data; stored history limits clamp before pruning |
+| 025 | Complete | Injected pasteboard writer returns success/degraded/failure; required failures do not mutate history and optional degradation has its own visible warning source |
+| 026 | Complete | Strict transfer DTO rejects malformed current envelopes with stable field-specific errors while explicit legacy raw arrays still migrate |
 | 027 | Complete | Strip Formatting writes the exact original plain-text characters without rich flavors |
-| 028 | Complete | Relative dates refresh every ten seconds and issue dismissal clears only the displayed source |
-| 029 | Complete | Delete preserves unselected rows and chooses the next/previous visual neighbor; reorders scroll the selected row |
+| 028 | Complete | Relative dates refresh every ten seconds and success/dismissal clears only the resolved issue source |
+| 029 | Complete | First/middle/last/section-boundary deletion selects the displayed neighbor; copy-induced reorders scroll the selected row |
 | 030 | Complete | The injected Login Item adapter covers deterministic status/request transitions, including approval-pending disable and transition recovery |
-| 031 | Complete | Mode validation precedes side effects; package never kills the app; a verified sibling bundle is exchanged atomically with rollback, covered by a 14-case shell harness |
+| 031 | Complete | Mode validation precedes side effects; package never kills the app; a verified sibling bundle is exchanged atomically with rollback, covered by a 14-case harness now run in CI |
 | 032 | Complete | Invalid manifest and complete image generation move together into a private recovery directory |
-| 033 | Implementation complete; manual matrix gate | Accessibility focus follows keyboard selection; rows expose selected state and named Copy/Pin/Delete actions |
+| 033 | Repository complete; manual matrix gate | Accessibility focus follows selection; rows expose selected state and named actions while duplicate pointer controls are hidden from the accessibility tree |
 | 034 | Complete | Onboarding uses actual hotkey status/formatter; only the menu-bar panel offers Open Main Window |
-| 035 | Complete; selected in scope | Native plain/rich text, PNG data/file representations, and JSON drop-import use existing immutable transfer validation without history mutation |
-| 036 | Complete | SwiftPM resource processing was removed; production assembly has one explicit manually verified icon/logo strategy |
-| 037 | Complete and enforced | 147 behavioral tests; strict concurrency; CI measures production sources directly with floors of 35% source, 80% storage, and 75% store |
+| 035 | Repository complete; manual interop gate | Native plain/rich text, PNG data/file representations, and JSON drop-import use immutable transfer validation without history mutation |
+| 036 | Complete | Explicit assembly copies images/localizations; packaged extraction verifies `Bundle` lookup, `NSImage` decode, and every source localization file |
+| 037 | Repository suites complete; external/manual portions remain | 177 tests, lifecycle and real-event coverage, strict concurrency, package/installer harnesses, and per-service production coverage floors |
 
 ## Verification evidence
 
-- Unit/integration tests: 147 passed, 0 failed.
+- Unit/integration tests: 177 passed, 0 failed.
 - Complete strict-concurrency build with warnings as errors: passed.
-- Production-source coverage: 42.04%; `ClipboardStorage`: 84.89%; `ClipboardStore`: 86.09%.
+- Production-source coverage: 44.59%; `ClipboardStorage`: 86.05%; `ClipboardStore`: 86.07%.
+- Injected service coverage: `GlobalHotkeyController` 31.32%; `LoginItemController` 45.71%; `PasteTargetController` 81.32%; `UpdateChecker` 64.86%, each enforced in CI.
+- Performance/integration fixtures cover a 96 MiB transient live-image workload, a valid near-10 MiB image copy, a seven-image near-100 MiB transfer boundary, and a >75 MiB responsive import.
 - Shell syntax and workflow YAML parsing: passed.
-- Package/invalid modes verified not to stop an already-running app; the installer harness passed 14/14 cases.
+- Release-contract and installer harnesses passed; CI now runs both, including all 14 installer cases.
 - Atomic installer probes removed stale files, preserved prior bundles across injected failures, and left no candidate/backup directories after success.
-- Local final ZIP verification passed for version `1.0.0` build `20`.
-- Final ZIP contains `x86_64` and `arm64`, verified resources, valid ad-hoc signature, and passed fresh-extraction launch verification.
-- Local final ZIP SHA-256: `dd2562fe37ff06d1d4c3c7fbb04990e9b6050f5d77e38eb3300019d61f394acb`.
+- Local final ZIP verification passed for version `1.0.0` build `22`.
+- Final ZIP contains `x86_64` and `arm64`, passes `Bundle`/image/localization resource verification, has a valid ad-hoc signature, and passed fresh-extraction launch verification.
+- Local final ZIP SHA-256: `57d35ee23f2ea918f34aa45c140849d7d6f914b4b6203850354287c64c83f17a`.
 - Local Gatekeeper rejection is expected for an ad-hoc build; distribution mode requires and verifies Developer ID signing, notarization, stapling, and Gatekeeper acceptance.

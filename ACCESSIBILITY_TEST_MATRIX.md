@@ -1,6 +1,8 @@
 # CopyClip Lite Accessibility Verification Matrix
 
-Automated coverage verifies the selection-order model, deletion neighbor behavior, presentation context, reduced-motion scroll branch, and accessibility labels/actions at compile time. Complete this manual matrix with VoiceOver enabled before a public release.
+Automated coverage verifies real keyboard-event routing with a text first responder, pinned-first order, first/middle/last deletion neighbors, copy-induced selection scrolling, presentation context, and lifecycle policy. The production build also compiles the accessibility focus/actions and the nonanimated Reduce Motion branch. Those checks do not prove spoken VoiceOver output or physical animation behavior.
+
+Manual status as of 2026-07-26: **not executed**. Complete this matrix with VoiceOver enabled before a public release and record the results in release QA notes.
 
 | Workflow | Expected result |
 |---|---|

@@ -23,6 +23,20 @@ enum ClipboardPanelOrdering {
         }
         return after[min(deletedIndex, after.count - 1)].id
     }
+
+    static func selectedPositionChanged(
+        selectedID: ClipboardItem.ID?,
+        beforeIDs: [ClipboardItem.ID],
+        afterIDs: [ClipboardItem.ID]
+    ) -> Bool {
+        guard let selectedID,
+              let oldIndex = beforeIDs.firstIndex(of: selectedID),
+              let newIndex = afterIDs.firstIndex(of: selectedID) else {
+            return false
+        }
+
+        return oldIndex != newIndex
+    }
 }
 
 enum ClipboardPanelPresentationContext: Equatable {
@@ -256,8 +270,13 @@ struct ClipboardPanelView: View {
                         scroll(to: newID, using: proxy)
                     }
                 }
-                .onChange(of: ClipboardPanelOrdering.displayedItems(visible).map(\.id)) { _, _ in
-                    if let selectedItemID {
+                .onChange(of: ClipboardPanelOrdering.displayedItems(visible).map(\.id)) { oldIDs, newIDs in
+                    if let selectedItemID,
+                       ClipboardPanelOrdering.selectedPositionChanged(
+                           selectedID: selectedItemID,
+                           beforeIDs: oldIDs,
+                           afterIDs: newIDs
+                       ) {
                         scroll(to: selectedItemID, using: proxy)
                     }
                 }
@@ -543,11 +562,15 @@ struct ClipboardPanelView: View {
     private enum DisplayedIssue {
         case paste(String)
         case storage(String)
+        case pasteboardWrite(String)
         case capture(String)
 
         var message: String {
             switch self {
-            case let .paste(message), let .storage(message), let .capture(message):
+            case let .paste(message),
+                 let .storage(message),
+                 let .pasteboardWrite(message),
+                 let .capture(message):
                 message
             }
         }
@@ -559,6 +582,9 @@ struct ClipboardPanelView: View {
         }
         if let message = store.storageErrorMessage {
             return .storage(message)
+        }
+        if let message = store.pasteboardWriteWarning {
+            return .pasteboardWrite(message)
         }
         if let message = store.captureWarning {
             return .capture(message)
@@ -572,6 +598,8 @@ struct ClipboardPanelView: View {
             pasteTargetController.dismissError()
         case .storage:
             store.dismissStorageError()
+        case .pasteboardWrite:
+            store.dismissPasteboardWriteWarning()
         case .capture:
             store.dismissCaptureWarning()
         case nil:

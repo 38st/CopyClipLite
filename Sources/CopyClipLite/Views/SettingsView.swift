@@ -298,7 +298,7 @@ struct SettingsView: View {
                     Button("Check Again") { updateChecker.check() }
                 case let .updateAvailable(version, _):
                     Label("Version \(version) is available", systemImage: "arrow.down.circle.fill")
-                    Button("Open Notarized Release") { updateChecker.openAvailableUpdate() }
+                    Button("Download Update") { updateChecker.openAvailableUpdate() }
                 case let .failed(message):
                     SettingsErrorText(message)
                     Button("Try Again") { updateChecker.check() }

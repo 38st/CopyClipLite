@@ -2,7 +2,9 @@
 set -euo pipefail
 
 APP_DISPLAY_NAME="${COPYCLIP_APP_DISPLAY_NAME:-CopyClip Lite}"
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/release_contract.sh"
 DIST_DIR="$ROOT_DIR/dist"
 STAGING_DIR="$DIST_DIR/staging.noindex"
 APP_BUNDLE="$STAGING_DIR/$APP_DISPLAY_NAME.app"
@@ -14,6 +16,7 @@ EXPECTED_VERSION="${COPYCLIP_EXPECTED_VERSION:-}"
 VERIFY_LAUNCH="${COPYCLIP_VERIFY_LAUNCH:-1}"
 VERIFY_DIR=""
 VERIFY_PID=""
+REPRODUCTION_ZIP=""
 
 cleanup() {
   if [[ -n "$VERIFY_PID" ]]; then
@@ -22,6 +25,9 @@ cleanup() {
   fi
   if [[ -n "$VERIFY_DIR" ]]; then
     rm -rf "$VERIFY_DIR"
+  fi
+  if [[ -n "$REPRODUCTION_ZIP" ]]; then
+    rm -f "$REPRODUCTION_ZIP"
   fi
 }
 trap cleanup EXIT
@@ -35,9 +41,12 @@ case "$RELEASE_MODE" in
     ;;
 esac
 
-if [[ -n "$EXPECTED_VERSION" && ! "$EXPECTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "COPYCLIP_EXPECTED_VERSION must use X.Y.Z." >&2
-  exit 3
+if [[ -n "$EXPECTED_VERSION" ]]; then
+  if ! copyclip_require_release_version \
+    "$EXPECTED_VERSION" \
+    "COPYCLIP_EXPECTED_VERSION"; then
+    exit 3
+  fi
 fi
 
 if [[ "$RELEASE_MODE" == "distribution" ]]; then
@@ -71,31 +80,23 @@ if [[ -n "$EXPECTED_VERSION" && "$STAGED_VERSION" != "$EXPECTED_VERSION" ]]; the
 fi
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 
-create_zip() {
-  rm -f "$ZIP_PATH"
-  mkdir -p "$(dirname "$ZIP_PATH")"
-  (
-    cd "$STAGING_DIR"
-    /usr/bin/ditto \
-      -c -k \
-      --keepParent \
-      --norsrc \
-      --noextattr \
-      --noqtn \
-      --noacl \
-      "$APP_DISPLAY_NAME.app" \
-      "$ZIP_PATH"
-  )
-}
-
-create_zip
+copyclip_create_release_zip "$STAGING_DIR" "$APP_DISPLAY_NAME" "$ZIP_PATH"
 
 if [[ "$RELEASE_MODE" == "distribution" ]]; then
   /usr/bin/xcrun notarytool submit "$ZIP_PATH" --keychain-profile "$NOTARY_PROFILE" --wait
   /usr/bin/xcrun stapler staple "$APP_BUNDLE"
   /usr/bin/xcrun stapler validate "$APP_BUNDLE"
-  create_zip
+  copyclip_create_release_zip "$STAGING_DIR" "$APP_DISPLAY_NAME" "$ZIP_PATH"
 fi
+
+REPRODUCTION_ZIP="$(mktemp "${TMPDIR:-/tmp}/copycliplite-release-reproduction.XXXXXX")"
+copyclip_verify_reproducible_zip \
+  "$STAGING_DIR" \
+  "$APP_DISPLAY_NAME" \
+  "$ZIP_PATH" \
+  "$REPRODUCTION_ZIP"
+rm -f "$REPRODUCTION_ZIP"
+REPRODUCTION_ZIP=""
 
 /usr/bin/unzip -tq "$ZIP_PATH" >/dev/null
 VERIFY_DIR="$(mktemp -d "${TMPDIR:-/tmp}/copycliplite-release.XXXXXX")"
@@ -135,6 +136,10 @@ for resource in CopyClipIcon.icns CopyClipLogo.png; do
     exit 10
   fi
 done
+"${COPYCLIP_SWIFT_COMMAND:-swift}" \
+  "$ROOT_DIR/script/verify_bundle_resources.swift" \
+  "$VERIFIED_APP" \
+  "$ROOT_DIR/Sources/CopyClipLite/Resources"
 
 if [[ "$RELEASE_MODE" == "distribution" ]]; then
   /usr/bin/xcrun stapler validate "$VERIFIED_APP"

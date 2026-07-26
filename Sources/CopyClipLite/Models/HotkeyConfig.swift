@@ -7,6 +7,7 @@ enum HotkeyConfigValidationError: LocalizedError, Equatable {
     case unsupportedModifiers
     case unsafeModifierCombination
     case unsafeEditingShortcut
+    case unsafeSystemShortcut
 
     var errorDescription: String? {
         switch self {
@@ -18,6 +19,8 @@ enum HotkeyConfigValidationError: LocalizedError, Equatable {
             return "Use Command, Option, or Control. Shift cannot be the only modifier."
         case .unsafeEditingShortcut:
             return "Add a second Command, Option, or Control modifier so the shortcut does not replace normal typing or editing."
+        case .unsafeSystemShortcut:
+            return "Choose a shortcut that does not replace a standard editing or macOS system command."
         }
     }
 }
@@ -32,12 +35,18 @@ struct HotkeyConfig: Codable, Equatable {
     )
 
     var displayString: String {
+        displayString(layoutLabelProvider: Self.currentKeyboardLayoutLabel)
+    }
+
+    func displayString(
+        layoutLabelProvider: (Int) -> String?
+    ) -> String {
         var parts: [String] = []
         if modifiers & controlKey != 0 { parts.append("⌃") }
         if modifiers & optionKey != 0 { parts.append("⌥") }
         if modifiers & shiftKey != 0 { parts.append("⇧") }
         if modifiers & cmdKey != 0 { parts.append("⌘") }
-        parts.append(keyLabel)
+        parts.append(keyLabel(layoutLabelProvider: layoutLabelProvider))
         return parts.joined()
     }
 
@@ -60,12 +69,24 @@ struct HotkeyConfig: Codable, Equatable {
            Self.unsafeSingleModifierKeyCodes.contains(keyCode) {
             return .unsafeEditingShortcut
         }
+        if Self.unsafeMultiModifierShortcuts.contains(
+            UnsafeShortcut(keyCode: keyCode, modifiers: modifiers)
+        ) {
+            return .unsafeSystemShortcut
+        }
 
         return nil
     }
 
     var keyLabel: String {
-        if let layoutLabel = Self.currentKeyboardLayoutLabel(for: keyCode) {
+        keyLabel(layoutLabelProvider: Self.currentKeyboardLayoutLabel)
+    }
+
+    func keyLabel(
+        layoutLabelProvider: (Int) -> String?
+    ) -> String {
+        if let rawLayoutLabel = layoutLabelProvider(keyCode),
+           let layoutLabel = Self.normalizedLayoutLabel(rawLayoutLabel) {
             return layoutLabel
         }
 
@@ -169,14 +190,18 @@ struct HotkeyConfig: Codable, Equatable {
             return nil
         }
 
-        let label = String(
+        return String(
             utf16CodeUnits: characters,
             count: actualLength
         )
-        guard label.unicodeScalars.allSatisfy({
-            !CharacterSet.controlCharacters.contains($0)
-                && !CharacterSet.whitespacesAndNewlines.contains($0)
-        }) else {
+    }
+
+    private static func normalizedLayoutLabel(_ label: String) -> String? {
+        guard !label.isEmpty,
+              label.unicodeScalars.allSatisfy({
+                  !CharacterSet.controlCharacters.contains($0)
+                      && !CharacterSet.whitespacesAndNewlines.contains($0)
+              }) else {
             return nil
         }
         return label.uppercased(with: .current)
@@ -213,4 +238,27 @@ struct HotkeyConfig: Codable, Equatable {
         kVK_ForwardDelete, kVK_LeftArrow, kVK_RightArrow, kVK_UpArrow,
         kVK_DownArrow, kVK_Escape
     ])
+
+    private struct UnsafeShortcut: Hashable {
+        let keyCode: Int
+        let modifiers: Int
+    }
+
+    private static let unsafeMultiModifierShortcuts: Set<UnsafeShortcut> = [
+        // Standard editing commands.
+        UnsafeShortcut(
+            keyCode: kVK_ANSI_V,
+            modifiers: cmdKey | optionKey | shiftKey
+        ),
+
+        // macOS and application-wide system commands.
+        UnsafeShortcut(keyCode: kVK_Escape, modifiers: cmdKey | optionKey),
+        UnsafeShortcut(keyCode: kVK_ANSI_Q, modifiers: cmdKey | controlKey),
+        UnsafeShortcut(keyCode: kVK_Space, modifiers: cmdKey | controlKey),
+        UnsafeShortcut(keyCode: kVK_ANSI_F, modifiers: cmdKey | controlKey),
+        UnsafeShortcut(keyCode: kVK_ANSI_D, modifiers: cmdKey | optionKey),
+        UnsafeShortcut(keyCode: kVK_ANSI_H, modifiers: cmdKey | optionKey),
+        UnsafeShortcut(keyCode: kVK_ANSI_M, modifiers: cmdKey | optionKey),
+        UnsafeShortcut(keyCode: kVK_Space, modifiers: cmdKey | optionKey),
+    ]
 }

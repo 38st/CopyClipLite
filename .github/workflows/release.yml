@@ -18,9 +18,13 @@ jobs:
       - name: Validate release tag and scripts
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          source script/release_contract.sh
+          copyclip_require_release_version "$VERSION" "Release tag version"
           echo "COPYCLIP_RELEASE_VERSION=$VERSION" >> "$GITHUB_ENV"
-          bash -n script/*.sh
+          bash -n script/*.sh script/tests/*.sh
+
+      - name: Verify release contract
+        run: bash script/tests/task_018_release_harness.sh
 
       - name: Import Developer ID certificate
         env:
@@ -70,12 +74,39 @@ jobs:
       - name: Record verified artifact checksum
         run: shasum -a 256 dist/CopyClip-Lite-macOS.zip | tee dist/CopyClip-Lite-macOS.zip.sha256
 
-      - name: Publish GitHub release
+      - name: Create draft GitHub release
+        id: draft_release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
             dist/CopyClip-Lite-macOS.zip \
             dist/CopyClip-Lite-macOS.zip.sha256 \
+            --draft \
             --generate-notes \
             --verify-tag
+          echo "created=true" >> "$GITHUB_OUTPUT"
+
+      - name: Verify uploaded release asset checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          DOWNLOAD_DIR="$(mktemp -d "$RUNNER_TEMP/copyclip-release-download.XXXXXX")"
+          trap 'rm -rf "$DOWNLOAD_DIR"' EXIT
+          gh release download "$GITHUB_REF_NAME" \
+            --pattern "CopyClip-Lite-macOS.zip" \
+            --dir "$DOWNLOAD_DIR"
+          EXPECTED_SHA256="$(awk '{print $1}' dist/CopyClip-Lite-macOS.zip.sha256)"
+          DOWNLOADED_SHA256="$(shasum -a 256 "$DOWNLOAD_DIR/CopyClip-Lite-macOS.zip" | awk '{print $1}')"
+          test "$DOWNLOADED_SHA256" = "$EXPECTED_SHA256"
+
+      - name: Publish verified GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false
+
+      - name: Remove failed draft release
+        if: ${{ failure() && steps.draft_release.outputs.created == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete "$GITHUB_REF_NAME" --yes

@@ -84,7 +84,7 @@ Create a validated share zip from the staged bundle:
 ./script/package_release.sh
 ```
 
-The script builds a release bundle, validates the bundle plist and code signature, writes `dist/CopyClip-Lite-macOS.zip`, verifies the zip, and reports the Gatekeeper assessment.
+The script builds a release bundle, validates the bundle plist and code signature, writes `dist/CopyClip-Lite-macOS.zip`, reproduces the final ZIP byte-for-byte from the staged app, verifies the ZIP, and reports the Gatekeeper assessment.
 
 By default, local builds are ad-hoc signed and intended only for local validation. Public releases must use distribution mode, a Developer ID Application identity, and a `notarytool` keychain profile. The script signs with hardened runtime, submits to Apple, staples the ticket, rebuilds the ZIP, and requires Gatekeeper acceptance:
 
@@ -95,7 +95,7 @@ COPYCLIP_NOTARY_PROFILE="CopyClipLiteNotary" \
 ./script/package_release.sh
 ```
 
-Tagged releases (`vX.Y.Z`) run the same test/sign/notarize/staple flow through `.github/workflows/release.yml`. Configure the repository secrets documented in that workflow before publishing the first tag. CI validates tests, the package, and both `arm64` and `x86_64` slices on every pull request.
+Published app versions use one `X.Y.Z` grammar, and release tags use the matching `vX.Y.Z` form. Tagged releases run the same test/sign/notarize/staple flow through `.github/workflows/release.yml`. The workflow creates a draft, downloads the uploaded ZIP, verifies its SHA-256 against the locally verified artifact, and only then publishes the release. Configure the repository secrets documented in that workflow before publishing the first tag. CI validates tests, the release contract, the package, and both `arm64` and `x86_64` slices on every pull request.
 
 Public distribution also requires a public release repository/feed. Local builds intentionally omit the update feed and report that no public channel is configured; the tagged-release workflow embeds the GitHub Releases endpoint only in the notarized distribution build.
 

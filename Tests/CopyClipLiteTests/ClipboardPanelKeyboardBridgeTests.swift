@@ -4,6 +4,73 @@ import XCTest
 @testable import CopyClipLite
 
 final class ClipboardPanelKeyboardBridgeTests: XCTestCase {
+    func testRealEventsRespectSearchFieldEditorAndExplicitCommands() throws {
+        let fieldEditor = NSTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 30))
+        fieldEditor.string = "search query"
+        var actions: [ClipboardPanelKeyAction] = []
+        let handle: (NSEvent) -> Bool = { event in
+            ClipboardPanelKeyRouting.handle(
+                event,
+                firstResponder: fieldEditor
+            ) { action in
+                actions.append(action)
+                return true
+            }
+        }
+
+        let unmodifiedPin = try keyEvent(
+            keyCode: UInt16(kVK_ANSI_P),
+            characters: "p"
+        )
+        XCTAssertFalse(handle(unmodifiedPin))
+        XCTAssertEqual(actions, [])
+        XCTAssertEqual(fieldEditor.string, "search query")
+
+        let explicitPin = try keyEvent(
+            keyCode: UInt16(kVK_ANSI_P),
+            characters: "p",
+            modifiers: .command
+        )
+        XCTAssertTrue(handle(explicitPin))
+        XCTAssertEqual(actions, [.togglePinSelected])
+        XCTAssertEqual(fieldEditor.string, "search query")
+
+        let unmodifiedDelete = try keyEvent(
+            keyCode: UInt16(kVK_Delete),
+            characters: "\u{8}"
+        )
+        XCTAssertFalse(handle(unmodifiedDelete))
+        XCTAssertEqual(actions, [.togglePinSelected])
+        XCTAssertEqual(fieldEditor.string, "search query")
+
+        let explicitDelete = try keyEvent(
+            keyCode: UInt16(kVK_Delete),
+            characters: "\u{8}",
+            modifiers: .command
+        )
+        XCTAssertTrue(handle(explicitDelete))
+        XCTAssertEqual(actions, [.togglePinSelected, .deleteSelected])
+        XCTAssertEqual(fieldEditor.string, "search query")
+    }
+
+    func testRealCommandFEventWithCapsLockIsConsumedWhileSearchIsFirstResponder() throws {
+        let fieldEditor = NSTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 30))
+        let event = try keyEvent(
+            keyCode: UInt16(kVK_ANSI_F),
+            characters: "F",
+            modifiers: [.command, .capsLock, .numericPad, .function]
+        )
+        var actions: [ClipboardPanelKeyAction] = []
+
+        XCTAssertTrue(
+            ClipboardPanelKeyRouting.handle(event, firstResponder: fieldEditor) { action in
+                actions.append(action)
+                return true
+            }
+        )
+        XCTAssertEqual(actions, [.focusSearch])
+    }
+
     func testRoutesEverySupportedKeyVariant() {
         let cases: [(UInt16, String?, NSEvent.ModifierFlags, ClipboardPanelKeyAction)] = [
             (UInt16(kVK_DownArrow), nil, [], .moveDown),
@@ -181,6 +248,27 @@ final class ClipboardPanelKeyboardBridgeTests: XCTestCase {
             charactersIgnoringModifiers: characters,
             modifierFlags: modifiers,
             isEditingText: isEditingText
+        )
+    }
+
+    private func keyEvent(
+        keyCode: UInt16,
+        characters: String = "",
+        modifiers: NSEvent.ModifierFlags = []
+    ) throws -> NSEvent {
+        try XCTUnwrap(
+            NSEvent.keyEvent(
+                with: .keyDown,
+                location: .zero,
+                modifierFlags: modifiers,
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                characters: characters,
+                charactersIgnoringModifiers: characters,
+                isARepeat: false,
+                keyCode: keyCode
+            )
         )
     }
 }

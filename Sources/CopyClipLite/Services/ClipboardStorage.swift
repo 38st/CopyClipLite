@@ -350,18 +350,47 @@ struct ClipboardStorage: @unchecked Sendable {
         let decoder = JSONDecoder()
         let transferItems: [ClipboardTransferItem]
         let isCurrentFormat: Bool
-        if let document = try? decoder.decode(ClipboardTransferDocument.self, from: data) {
-            guard document.format == "CopyClipLite" else {
+        let transferRoot: Any
+        do {
+            transferRoot = try JSONSerialization.jsonObject(with: data)
+        } catch {
+            throw ClipboardStorageError.invalidImportedItem("the transfer JSON is malformed")
+        }
+
+        if let documentObject = transferRoot as? [String: Any] {
+            guard let format = documentObject["format"] as? String,
+                  format == "CopyClipLite" else {
                 throw ClipboardStorageError.invalidImportedItem("the transfer format identifier is invalid")
             }
-            guard document.version == ClipboardTransferDocument.currentVersion else {
-                throw ClipboardStorageError.unsupportedTransferVersion(document.version)
+            guard let version = documentObject["version"] as? Int else {
+                throw ClipboardStorageError.invalidImportedItem(
+                    "the transfer version is missing or invalid"
+                )
+            }
+            guard version == ClipboardTransferDocument.currentVersion else {
+                throw ClipboardStorageError.unsupportedTransferVersion(version)
+            }
+            guard documentObject["items"] is [Any] else {
+                throw ClipboardStorageError.invalidImportedItem(
+                    "the transfer items field is missing or malformed"
+                )
+            }
+
+            let document: ClipboardTransferDocument
+            do {
+                document = try decoder.decode(ClipboardTransferDocument.self, from: data)
+            } catch {
+                throw Self.currentTransferDecodingError(error)
             }
             transferItems = document.items
             isCurrentFormat = true
-        } else {
+        } else if transferRoot is [Any] {
             transferItems = try decoder.decode([ClipboardTransferItem].self, from: data)
             isCurrentFormat = false
+        } else {
+            throw ClipboardStorageError.invalidImportedItem(
+                "the transfer root must be a current-format object or legacy array"
+            )
         }
 
         var items = try transferItems.map {
@@ -386,6 +415,37 @@ struct ClipboardStorage: @unchecked Sendable {
             }
         }
         return items
+    }
+
+    private static func currentTransferDecodingError(_ error: Error) -> ClipboardStorageError {
+        let codingPath: [CodingKey]
+        switch error {
+        case let DecodingError.typeMismatch(_, context),
+             let DecodingError.valueNotFound(_, context),
+             let DecodingError.dataCorrupted(context):
+            codingPath = context.codingPath
+        case let DecodingError.keyNotFound(key, context):
+            codingPath = context.codingPath + [key]
+        default:
+            return .invalidImportedItem("the current transfer document is malformed")
+        }
+
+        let fieldPath = codingPath.reduce(into: "") { result, key in
+            if let index = key.intValue {
+                result += "[\(index)]"
+            } else {
+                if !result.isEmpty {
+                    result += "."
+                }
+                result += key.stringValue
+            }
+        }
+        guard !fieldPath.isEmpty else {
+            return .invalidImportedItem("the current transfer document is malformed")
+        }
+        return .invalidImportedItem(
+            "the current transfer field “\(fieldPath)” is malformed"
+        )
     }
 
     func importPreview(from url: URL) throws -> ClipboardImportPreview {

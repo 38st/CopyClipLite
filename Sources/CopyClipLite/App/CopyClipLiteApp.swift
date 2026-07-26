@@ -1,23 +1,76 @@
 import AppKit
 import SwiftUI
 
+struct CopyClipAppLaunchPolicy {
+    let hasCompletedWelcome: Bool
+
+    var suppressesInitialMainWindow: Bool {
+        hasCompletedWelcome
+    }
+
+    var activatesApplicationAfterLaunch: Bool {
+        !hasCompletedWelcome
+    }
+}
+
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var store: ClipboardStore?
-    private var shouldSuppressInitialMainWindow: Bool = {
+    private let hasCompletedWelcome: @MainActor () -> Bool
+    private let applyAccessoryActivationPolicy: @MainActor () -> Void
+    private let activateApplication: @MainActor () -> Void
+    private let cleanupWithoutStore: @MainActor () -> Void
+    private var shouldSuppressInitialMainWindow: Bool
+
+    override convenience init() {
         LegacyDefaultsMigrator.migrateIfNeeded()
-        return UserDefaults.standard.bool(forKey: "hasCompletedWelcome")
-    }()
+        self.init(
+            hasCompletedWelcome: {
+                UserDefaults.standard.bool(forKey: "hasCompletedWelcome")
+            },
+            applyAccessoryActivationPolicy: {
+                NSApp.setActivationPolicy(.accessory)
+            },
+            activateApplication: {
+                NSApp.activate(ignoringOtherApps: true)
+            },
+            cleanupWithoutStore: {
+                ClipboardStore.clearUnpinnedHistoryOnQuitIfNeeded()
+            }
+        )
+    }
+
+    init(
+        hasCompletedWelcome: @escaping @MainActor () -> Bool,
+        applyAccessoryActivationPolicy: @escaping @MainActor () -> Void,
+        activateApplication: @escaping @MainActor () -> Void,
+        cleanupWithoutStore: @escaping @MainActor () -> Void
+    ) {
+        self.hasCompletedWelcome = hasCompletedWelcome
+        self.applyAccessoryActivationPolicy = applyAccessoryActivationPolicy
+        self.activateApplication = activateApplication
+        self.cleanupWithoutStore = cleanupWithoutStore
+        self.shouldSuppressInitialMainWindow = CopyClipAppLaunchPolicy(
+            hasCompletedWelcome: hasCompletedWelcome()
+        ).suppressesInitialMainWindow
+        super.init()
+    }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         LegacyDefaultsMigrator.migrateIfNeeded()
-        shouldSuppressInitialMainWindow = UserDefaults.standard.bool(forKey: "hasCompletedWelcome")
+        shouldSuppressInitialMainWindow = CopyClipAppLaunchPolicy(
+            hasCompletedWelcome: hasCompletedWelcome()
+        ).suppressesInitialMainWindow
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory)
+        applyAccessoryActivationPolicy()
 
-        if !UserDefaults.standard.bool(forKey: "hasCompletedWelcome") {
-            NSApp.activate(ignoringOtherApps: true)
+        let launchPolicy = CopyClipAppLaunchPolicy(
+            hasCompletedWelcome: hasCompletedWelcome()
+        )
+        if launchPolicy.activatesApplicationAfterLaunch {
+            activateApplication()
         }
     }
 
@@ -25,7 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let store {
             store.clearUnpinnedHistoryOnQuitIfNeeded()
         } else {
-            ClipboardStore.clearUnpinnedHistoryOnQuitIfNeeded()
+            cleanupWithoutStore()
         }
     }
 

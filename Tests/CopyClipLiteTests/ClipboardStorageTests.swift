@@ -535,6 +535,88 @@ final class ClipboardStorageTests: XCTestCase {
         }
     }
 
+    func testMalformedCurrentTransferEnvelopeReturnsSpecificErrors() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+
+        XCTAssertThrowsError(
+            try storage.importItems(
+                data: Data(
+                    """
+                    {"format":"CopyClipLite","version":1,"items":"not-an-array"}
+                    """.utf8
+                )
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ClipboardStorageError,
+                .invalidImportedItem("the transfer items field is missing or malformed")
+            )
+        }
+
+        XCTAssertThrowsError(
+            try storage.importItems(
+                data: Data(
+                    """
+                    {"format":"CopyClipLite","version":"one","items":[]}
+                    """.utf8
+                )
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ClipboardStorageError,
+                .invalidImportedItem("the transfer version is missing or invalid")
+            )
+        }
+
+        XCTAssertThrowsError(
+            try storage.importItems(
+                data: Data(
+                    """
+                    {
+                      "format":"CopyClipLite",
+                      "version":1,
+                      "items":[{
+                        "id":"not-a-uuid",
+                        "text":"value",
+                        "contentKind":"text",
+                        "createdAt":0,
+                        "lastCopiedAt":0,
+                        "isPinned":false,
+                        "copyCount":1
+                      }]
+                    }
+                    """.utf8
+                )
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ClipboardStorageError,
+                .invalidImportedItem(
+                    "the current transfer field “items[0].id” is malformed"
+                )
+            )
+        }
+    }
+
+    func testValidLegacyRawArrayImportMigratesExplicitDefaults() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let imported = try storage.importItems(
+            data: Data(
+                """
+                [{"text":"legacy raw-array clip"}]
+                """.utf8
+            )
+        )
+
+        let item = try XCTUnwrap(imported.first)
+        XCTAssertEqual(imported.count, 1)
+        XCTAssertEqual(item.text, "legacy raw-array clip")
+        XCTAssertEqual(item.contentKind, .text)
+        XCTAssertEqual(item.copyCount, 1)
+        XCTAssertFalse(item.isPinned)
+        XCTAssertEqual(item.createdAt, item.lastCopiedAt)
+    }
+
     func testUnsupportedTransferVersionIsRejected() throws {
         let directory = try makeTemporaryDirectory()
         let storage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Store"))
@@ -575,6 +657,72 @@ final class ClipboardStorageTests: XCTestCase {
             }
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: exportURL.path))
+    }
+
+    func testNearLimitImageExportRoundTripsAndFirstAggregateOverflowPreservesDestination() throws {
+        let directory = try makeTemporaryDirectory()
+        let storage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Store"))
+        let exportURL = directory.appendingPathComponent("near-limit-images.json")
+        let image = try NearLimitImageFixture.canonicalPNG()
+        let imageData = try XCTUnwrap(image.data)
+        let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
+
+        XCTAssertGreaterThanOrEqual(
+            imageData.count,
+            ClipboardStorage.maximumImportedImageBytes * 8 / 10
+        )
+        XCTAssertLessThanOrEqual(
+            imageData.count,
+            ClipboardStorage.maximumImportedImageBytes
+        )
+
+        func items(count: Int) -> [ClipboardItem] {
+            (1...count).map { index in
+                ClipboardItem(
+                    id: UUID(
+                        uuid: (
+                            0, 0, 0, 0, 0, 0, 0, 0,
+                            0, 0, 0, 0, 0, 0,
+                            UInt8(index >> 8),
+                            UInt8(truncatingIfNeeded: index)
+                        )
+                    ),
+                    text: "near-limit image \(index)",
+                    image: image,
+                    createdAt: fixedDate,
+                    lastCopiedAt: fixedDate,
+                    isPinned: index.isMultiple(of: 2),
+                    copyCount: index
+                )
+            }
+        }
+
+        let maximumCompatibleItems = items(count: 7)
+        try storage.export(maximumCompatibleItems, to: exportURL)
+        let exportedData = try Data(contentsOf: exportURL)
+        XCTAssertLessThanOrEqual(exportedData.count, ClipboardStorage.maximumImportBytes)
+
+        let importedItems = try storage.importItems(data: exportedData)
+        XCTAssertEqual(importedItems, maximumCompatibleItems)
+        XCTAssertTrue(importedItems.allSatisfy { $0.image == image })
+
+        let overflowURL = directory.appendingPathComponent("aggregate-overflow.json")
+        let sentinel = Data("existing export must survive".utf8)
+        let formattedMaximumImportBytes = ByteCountFormatter.string(
+            fromByteCount: Int64(ClipboardStorage.maximumImportBytes),
+            countStyle: .file
+        )
+        try sentinel.write(to: overflowURL)
+
+        XCTAssertThrowsError(try storage.export(items(count: 8), to: overflowURL)) { error in
+            XCTAssertEqual(
+                error as? ClipboardStorageError,
+                .incompatibleExport(
+                    "the encoded file would exceed \(formattedMaximumImportBytes)"
+                )
+            )
+        }
+        XCTAssertEqual(try Data(contentsOf: overflowURL), sentinel)
     }
 
     func testExportRejectsCorruptStoredImageBeforeWriting() throws {

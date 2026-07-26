@@ -18,6 +18,20 @@ struct ClipboardPanelKeyInput {
 }
 
 enum ClipboardPanelKeyRouting {
+    static func action(
+        for event: NSEvent,
+        firstResponder: NSResponder?
+    ) -> ClipboardPanelKeyAction? {
+        action(
+            for: ClipboardPanelKeyInput(
+                keyCode: event.keyCode,
+                charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+                modifierFlags: event.modifierFlags,
+                isEditingText: firstResponder is NSTextView
+            )
+        )
+    }
+
     static func action(for input: ClipboardPanelKeyInput) -> ClipboardPanelKeyAction? {
         let modifiers = input.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let normalizedModifiers = modifiers.subtracting([.capsLock, .numericPad, .function])
@@ -63,6 +77,17 @@ enum ClipboardPanelKeyRouting {
         using handler: (ClipboardPanelKeyAction) -> Bool
     ) -> Bool {
         guard let action = action(for: input) else {
+            return false
+        }
+        return handler(action)
+    }
+
+    static func handle(
+        _ event: NSEvent,
+        firstResponder: NSResponder?,
+        using handler: (ClipboardPanelKeyAction) -> Bool
+    ) -> Bool {
+        guard let action = action(for: event, firstResponder: firstResponder) else {
             return false
         }
         return handler(action)
@@ -122,12 +147,8 @@ struct ClipboardPanelKeyboardBridge: NSViewRepresentable {
 
         private func handle(_ event: NSEvent) -> Bool {
             ClipboardPanelKeyRouting.handle(
-                ClipboardPanelKeyInput(
-                    keyCode: event.keyCode,
-                    charactersIgnoringModifiers: event.charactersIgnoringModifiers,
-                    modifierFlags: event.modifierFlags,
-                    isEditingText: isEditingText
-                ),
+                event,
+                firstResponder: view?.window?.firstResponder,
                 using: handle
             )
         }
@@ -138,14 +159,6 @@ struct ClipboardPanelKeyboardBridge: NSViewRepresentable {
             }
 
             return event.window === window
-        }
-
-        private var isEditingText: Bool {
-            guard let firstResponder = view?.window?.firstResponder else {
-                return false
-            }
-
-            return firstResponder is NSTextView
         }
     }
 }

@@ -99,6 +99,10 @@ struct ClipboardItemRow: View {
                 .help("Delete")
             }
             .foregroundStyle(.secondary)
+            // The row exposes these operations as named accessibility actions.
+            // Hide the duplicate icon controls from the accessibility tree while
+            // keeping them available to pointer users.
+            .accessibilityHidden(true)
         }
         .padding(10)
         .background(

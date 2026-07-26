@@ -31,6 +31,39 @@ struct PasteTargetRuntime {
     var openAccessibilitySettings: () -> Void
     var hideApplication: () -> Void
     var restoreApplication: () -> Void
+    var frontmostApplication: () -> (any PasteTargetApplication)? = {
+        NSWorkspace.shared.frontmostApplication
+    }
+    var observeApplicationActivations: (
+        @escaping @MainActor @Sendable (any PasteTargetApplication) -> Void
+    ) -> () -> Void = { handler in
+        let notificationCenter = NSWorkspace.shared.notificationCenter
+        let observer = NotificationObserverToken(
+            notificationCenter.addObserver(
+                forName: NSWorkspace.didActivateApplicationNotification,
+                object: nil,
+                queue: .main
+            ) { notification in
+                guard let application = notification.userInfo?[
+                    NSWorkspace.applicationUserInfoKey
+                ] as? NSRunningApplication else {
+                    return
+                }
+                MainActor.assumeIsolated {
+                    handler(application)
+                }
+            }
+        )
+        return {
+            notificationCenter.removeObserver(observer.value)
+        }
+    }
+    var monotonicNanoseconds: () -> UInt64 = {
+        DispatchTime.now().uptimeNanoseconds
+    }
+    var sleepNanoseconds: (UInt64) async throws -> Void = {
+        try await Task.sleep(nanoseconds: $0)
+    }
 
     static let live = PasteTargetRuntime(
         isAccessibilityGranted: { PasteSimulator.isAccessibilityGranted },
@@ -62,13 +95,13 @@ final class PasteTargetController: ObservableObject {
     @Published private(set) var attemptState: PasteAttemptState = .idle
 
     private var lastExternalApplication: (any PasteTargetApplication)?
-    nonisolated(unsafe) private var activationObserver: NotificationObserverToken?
+    nonisolated(unsafe) private var cancelActivationObservation: (() -> Void)?
     private var pendingPasteTask: Task<Void, Never>?
     private var pendingPasteOwnsHiddenUI = false
     private var pasteRequestGeneration: UInt64 = 0
     private var isPreservingTargetForSystemSettings = false
     private let runtime: PasteTargetRuntime
-    private let activationPollCount: Int
+    private let activationTimeoutNanoseconds: UInt64
     private let activationPollNanoseconds: UInt64
     private let stabilizationNanoseconds: UInt64
 
@@ -78,14 +111,17 @@ final class PasteTargetController: ObservableObject {
         observeWorkspace: Bool = true,
         activationPollCount: Int = 20,
         activationPollNanoseconds: UInt64 = 50_000_000,
+        activationTimeoutNanoseconds: UInt64? = nil,
         stabilizationNanoseconds: UInt64 = 100_000_000
     ) {
         let runtime = runtime ?? .live
         self.runtime = runtime
         self.isAccessibilityGranted = runtime.isAccessibilityGranted()
         self.lastExternalApplication = initialTarget
-        self.activationPollCount = activationPollCount
-        self.activationPollNanoseconds = activationPollNanoseconds
+        let pollInterval = max(activationPollNanoseconds, 1)
+        self.activationPollNanoseconds = pollInterval
+        self.activationTimeoutNanoseconds = activationTimeoutNanoseconds
+            ?? Self.clampedProduct(max(activationPollCount, 0), pollInterval)
         self.stabilizationNanoseconds = stabilizationNanoseconds
 
         if initialTarget == nil {
@@ -98,9 +134,7 @@ final class PasteTargetController: ObservableObject {
 
     deinit {
         pendingPasteTask?.cancel()
-        if let activationObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(activationObserver.value)
-        }
+        cancelActivationObservation?()
     }
 
     var targetApplicationName: String? {
@@ -108,7 +142,7 @@ final class PasteTargetController: ObservableObject {
     }
 
     func captureCurrentTarget() {
-        rememberIfExternal(NSWorkspace.shared.frontmostApplication)
+        rememberIfExternal(runtime.frontmostApplication())
     }
 
     func refreshPermission() {
@@ -172,13 +206,25 @@ final class PasteTargetController: ObservableObject {
         attemptState = .waitingForTarget(target: targetName)
         pendingPasteTask = Task { @MainActor [weak self, target] in
             guard let self else { return }
-            for _ in 0..<self.activationPollCount {
-                try? await Task.sleep(nanoseconds: self.activationPollNanoseconds)
+            let deadline = Self.clampedSum(
+                self.runtime.monotonicNanoseconds(),
+                self.activationTimeoutNanoseconds
+            )
+            while !target.pasteIsActive {
+                let now = self.runtime.monotonicNanoseconds()
+                guard now < deadline else { break }
+                let remaining = deadline - now
+                do {
+                    try await self.runtime.sleepNanoseconds(
+                        min(self.activationPollNanoseconds, remaining)
+                    )
+                } catch {
+                    return
+                }
                 guard !Task.isCancelled,
                       self.pasteRequestGeneration == requestGeneration else {
                     return
                 }
-                if target.pasteIsActive { break }
             }
 
             guard target.pasteIsActive else {
@@ -190,7 +236,11 @@ final class PasteTargetController: ObservableObject {
                 return
             }
 
-            try? await Task.sleep(nanoseconds: self.stabilizationNanoseconds)
+            do {
+                try await self.runtime.sleepNanoseconds(self.stabilizationNanoseconds)
+            } catch {
+                return
+            }
             guard !Task.isCancelled,
                   self.pasteRequestGeneration == requestGeneration else {
                 return
@@ -236,19 +286,9 @@ final class PasteTargetController: ObservableObject {
     }
 
     private func installActivationObserver() {
-        activationObserver = NotificationObserverToken(
-            NSWorkspace.shared.notificationCenter.addObserver(
-                forName: NSWorkspace.didActivateApplicationNotification,
-                object: nil,
-                queue: .main
-            ) { [weak self] notification in
-                guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
-                        as? NSRunningApplication else { return }
-                MainActor.assumeIsolated {
-                    self?.handleActivation(application)
-                }
-            }
-        )
+        cancelActivationObservation = runtime.observeApplicationActivations { [weak self] application in
+            self?.handleActivation(application)
+        }
     }
 
     func handleActivation(_ application: any PasteTargetApplication) {
@@ -310,4 +350,15 @@ final class PasteTargetController: ObservableObject {
     }
 
     private static let permissionError = "Direct Paste needs Accessibility permission. Open Settings to grant it."
+
+    private static func clampedProduct(_ lhs: Int, _ rhs: UInt64) -> UInt64 {
+        guard let lhs = UInt64(exactly: lhs) else { return 0 }
+        let (result, overflow) = lhs.multipliedReportingOverflow(by: rhs)
+        return overflow ? .max : result
+    }
+
+    private static func clampedSum(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
+        let (result, overflow) = lhs.addingReportingOverflow(rhs)
+        return overflow ? .max : result
+    }
 }

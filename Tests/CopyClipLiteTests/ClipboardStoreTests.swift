@@ -68,6 +68,26 @@ private actor RecordingDelayedImageProcessor: ClipboardImageProcessing {
     }
 }
 
+private actor ExternalizingStressImageProcessor: ClipboardImageProcessing {
+    let payloadByteCount: Int
+
+    init(payloadByteCount: Int) {
+        self.payloadByteCount = payloadByteCount
+    }
+
+    func process(_ candidate: ClipboardImageCandidate) async throws -> ClipboardImagePayload {
+        let marker = candidate.data.first ?? 0
+        let data = Data(repeating: marker, count: payloadByteCount)
+        return ClipboardImagePayload(
+            data: data,
+            thumbnailData: Data(repeating: marker, count: 1_024),
+            width: 1,
+            height: 1,
+            contentHash: ClipboardImageProcessor.contentHash(for: data)
+        )
+    }
+}
+
 private final class ManualClipboardClock: @unchecked Sendable {
     private struct Sleeper {
         let wakeDate: Date
@@ -311,6 +331,81 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertNotNil(externalizedItem.image?.fileName)
         XCTAssertTrue(store.copy(externalizedItem))
         XCTAssertNotNil(pasteboard.data(forType: .png))
+    }
+
+    func testLiveImageStressExternalizesPayloadsAndBoundsResidentMemory() async throws {
+        let payloadByteCount = 2 * 1024 * 1024
+        let captureCount = 48
+        let maximumResidentGrowth = UInt64(80 * 1024 * 1024)
+        let pasteboard = makePasteboard()
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let writer = StubPasteboardWriter(result: .success)
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: storage,
+            defaults: makeDefaults(),
+            sourceApplicationProvider: { nil },
+            imageProcessor: ExternalizingStressImageProcessor(
+                payloadByteCount: payloadByteCount
+            ),
+            pasteboardWriter: writer
+        )
+        store.setHistoryLimit(200)
+
+        ProcessMemoryMetrics.relieveAllocatorPressure()
+        let baselineResidentBytes = try ProcessMemoryMetrics.residentSizeBytes()
+
+        for marker in 1...captureCount {
+            pasteboard.clearContents()
+            XCTAssertTrue(
+                pasteboard.setData(
+                    Data([UInt8(marker)]),
+                    forType: .png
+                )
+            )
+            store.pollPasteboardForChanges()
+            for _ in 0..<500 where store.items.count < marker {
+                try await Task.sleep(nanoseconds: 1_000_000)
+            }
+            XCTAssertEqual(store.items.count, marker)
+            XCTAssertTrue(store.flushPendingPersist())
+            XCTAssertEqual(
+                store.items.reduce(0) {
+                    $0 + ($1.image?.data?.count ?? 0)
+                        + ($1.image?.thumbnailData?.count ?? 0)
+                },
+                0
+            )
+        }
+
+        try await Task.sleep(nanoseconds: 20_000_000)
+        ProcessMemoryMetrics.relieveAllocatorPressure()
+        let finalResidentBytes = try ProcessMemoryMetrics.residentSizeBytes()
+        let residentGrowth = ProcessMemoryMetrics.positiveGrowth(
+            from: baselineResidentBytes,
+            to: finalResidentBytes
+        )
+
+        XCTAssertEqual(store.items.count, captureCount)
+        XCTAssertLessThan(
+            residentGrowth,
+            maximumResidentGrowth,
+            "Committed live images retained \(residentGrowth) bytes of resident memory"
+        )
+        let first = try XCTUnwrap(store.items.first)
+        let last = try XCTUnwrap(store.items.last)
+        XCTAssertTrue(store.copy(first))
+        XCTAssertTrue(store.copy(last))
+        XCTAssertEqual(writer.requests.count, 2)
+        XCTAssertEqual(
+            writer.requests.map { request in
+                request.required.reduce(0) {
+                    guard case let .data(data) = $1.value else { return $0 }
+                    return $0 + data.count
+                }
+            },
+            [payloadByteCount, payloadByteCount]
+        )
     }
 
     func testAsyncThumbnailLookupRepairsSidecarDeletedAfterInitialization() async throws {
@@ -597,6 +692,19 @@ final class ClipboardStoreTests: XCTestCase {
         let reloadedImage = try XCTUnwrap(storage.load().first(where: { $0.id == imageID }))
         try assertReadableImageData(storage.imageData(for: reloadedImage))
         XCTAssertNotNil(storage.thumbnailData(for: reloadedImage))
+
+        let reloadedPasteboard = makePasteboard()
+        let reloadedStore = ClipboardStore(
+            pasteboard: reloadedPasteboard,
+            storage: storage,
+            defaults: makeDefaults(),
+            sourceApplicationProvider: { nil }
+        )
+        let reloadedStoreImage = try XCTUnwrap(
+            reloadedStore.items.first(where: { $0.id == imageID })
+        )
+        XCTAssertTrue(reloadedStore.copy(reloadedStoreImage))
+        try assertReadableImageData(reloadedPasteboard.data(forType: .png))
     }
 
     func testClearKeepingPinnedKeepsLiveCapturedImageFilesReadable() async throws {
@@ -622,6 +730,18 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertTrue(reloadedImage.isPinned)
         try assertReadableImageData(storage.imageData(for: reloadedImage))
         XCTAssertNotNil(storage.thumbnailData(for: reloadedImage))
+
+        let reloadedPasteboard = makePasteboard()
+        let reloadedStore = ClipboardStore(
+            pasteboard: reloadedPasteboard,
+            storage: storage,
+            defaults: makeDefaults(),
+            sourceApplicationProvider: { nil }
+        )
+        let reloadedStoreImage = try XCTUnwrap(reloadedStore.items.first)
+        XCTAssertTrue(reloadedStoreImage.isPinned)
+        XCTAssertTrue(reloadedStore.copy(reloadedStoreImage))
+        try assertReadableImageData(reloadedPasteboard.data(forType: .png))
     }
 
     func testCopyImageItemWritesImagePasteboardTypes() throws {
@@ -675,27 +795,25 @@ final class ClipboardStoreTests: XCTestCase {
         )
     }
 
-    func testNearLimitImageCopyDoesNotDecodeOrBlockMainActor() throws {
+    func testMaximumSupportedValidImageCopyDoesNotDecodeOrBlockMainActor() throws {
         let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
-        let nearLimitData = Data(
-            repeating: 0x5A,
-            count: ClipboardImageProcessor.maximumEncodedBytes - 1
-        )
+        let side = 4_096
+        XCTAssertEqual(side * side, ClipboardImageProcessor.maximumPixelCount)
+        let maximumDimensionPNG = try makeSolidPNGData(width: side, height: side)
         storage.save([
             ClipboardItem(
                 image: ClipboardImagePayload(
-                    data: nearLimitData,
-                    width: ClipboardImageProcessor.maximumDimension,
-                    height: 1
+                    data: maximumDimensionPNG,
+                    width: side,
+                    height: side
                 )
             )
         ])
-        let writer = StubPasteboardWriter(result: .success)
+        let pasteboard = makePasteboard()
         let store = ClipboardStore(
-            pasteboard: makePasteboard(),
+            pasteboard: pasteboard,
             storage: storage,
-            defaults: makeDefaults(),
-            pasteboardWriter: writer
+            defaults: makeDefaults()
         )
         let item = try XCTUnwrap(store.items.first)
         let start = ContinuousClock.now
@@ -704,9 +822,65 @@ final class ClipboardStoreTests: XCTestCase {
 
         let elapsed = start.duration(to: .now)
         XCTAssertLessThan(elapsed, .seconds(1))
-        XCTAssertEqual(
-            writer.requests.first?.required.first?.value,
-            .data(nearLimitData)
+        XCTAssertEqual(pasteboard.data(forType: .png), maximumDimensionPNG)
+    }
+
+    func testNearEncodedLimitValidImageCopyMeetsLatencyAndResidentBudgets() throws {
+        let maximumCopyLatency = Duration.seconds(1)
+        let maximumResidentGrowth = UInt64(
+            ClipboardImageProcessor.maximumEncodedBytes + 32 * 1024 * 1024
+        )
+        let image = try NearLimitImageFixture.canonicalPNG()
+        let imageData = try XCTUnwrap(image.data)
+        XCTAssertGreaterThanOrEqual(
+            imageData.count,
+            ClipboardImageProcessor.maximumEncodedBytes * 8 / 10
+        )
+        XCTAssertLessThanOrEqual(
+            imageData.count,
+            ClipboardImageProcessor.maximumEncodedBytes
+        )
+        XCTAssertTrue(ClipboardImageProcessor.isDecodableImage(imageData))
+
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        storage.save([ClipboardItem(image: image)])
+        let writer = StubPasteboardWriter(result: .success)
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: storage,
+            defaults: makeDefaults(),
+            pasteboardWriter: writer
+        )
+        let item = try XCTUnwrap(store.items.first)
+
+        ProcessMemoryMetrics.relieveAllocatorPressure()
+        let baselineResidentBytes = try ProcessMemoryMetrics.residentSizeBytes()
+        let sampler = ProcessResidentPeakSampler(
+            baselineResidentBytes: baselineResidentBytes
+        )
+        sampler.start()
+        let start = ContinuousClock.now
+
+        XCTAssertTrue(store.copy(item))
+
+        let elapsed = start.duration(to: .now)
+        let peakResidentBytes = sampler.stop()
+        let residentGrowth = ProcessMemoryMetrics.positiveGrowth(
+            from: baselineResidentBytes,
+            to: peakResidentBytes
+        )
+        XCTAssertLessThan(elapsed, maximumCopyLatency)
+        XCTAssertLessThan(
+            residentGrowth,
+            maximumResidentGrowth,
+            "Copy grew resident memory by \(residentGrowth) bytes"
+        )
+        let request = try XCTUnwrap(writer.requests.first)
+        XCTAssertEqual(request.required.map(\.type), [NSPasteboard.PasteboardType.png.rawValue])
+        XCTAssertEqual(request.required.first?.value, .data(imageData))
+        XCTAssertFalse(
+            (request.required + request.optional)
+                .contains { $0.type == NSPasteboard.PasteboardType.tiff.rawValue }
         )
     }
 
@@ -749,7 +923,7 @@ final class ClipboardStoreTests: XCTestCase {
 
         XCTAssertTrue(store.copy(try XCTUnwrap(store.items.first)))
         XCTAssertEqual(store.items.first?.copyCount, 2)
-        XCTAssertTrue(store.captureWarning?.contains("optional formats") == true)
+        XCTAssertTrue(store.pasteboardWriteWarning?.contains("optional formats") == true)
     }
 
     func testRequiredPasteboardRepresentationFailureMatrixDoesNotMutateHistory() throws {
@@ -872,7 +1046,9 @@ final class ClipboardStoreTests: XCTestCase {
                     NSPasteboard.PasteboardType.html.rawValue
                 ]
             )
-            XCTAssertTrue(store.captureWarning?.contains(failedType.rawValue) == true)
+            XCTAssertTrue(
+                store.pasteboardWriteWarning?.contains(failedType.rawValue) == true
+            )
             XCTAssertNil(store.storageErrorMessage)
         }
 
@@ -908,9 +1084,46 @@ final class ClipboardStoreTests: XCTestCase {
             [NSPasteboard.PasteboardType.string.rawValue]
         )
         XCTAssertTrue(
-            store.captureWarning?.contains(NSPasteboard.PasteboardType.string.rawValue) == true
+            store.pasteboardWriteWarning?
+                .contains(NSPasteboard.PasteboardType.string.rawValue) == true
         )
         XCTAssertNil(store.storageErrorMessage)
+    }
+
+    func testSuccessfulCopyClearsOnlyTheResolvedPasteboardWriteWarning() throws {
+        let pasteboard = makePasteboard()
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        storage.save([
+            ClipboardItem(
+                text: "rich",
+                rtfData: Data("rtf".utf8)
+            )
+        ])
+        let writer = StubPasteboardWriter(
+            result: .degraded(optionalTypes: [NSPasteboard.PasteboardType.rtf.rawValue])
+        )
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: storage,
+            defaults: makeDefaults(),
+            pasteboardWriter: writer
+        )
+
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString(String(repeating: "x", count: 20_001), forType: .string))
+        store.pollPasteboardForChanges()
+        let independentCaptureWarning = try XCTUnwrap(store.captureWarning)
+        let item = try XCTUnwrap(store.items.first)
+
+        XCTAssertTrue(store.copy(item))
+        XCTAssertNotNil(store.pasteboardWriteWarning)
+        XCTAssertEqual(store.captureWarning, independentCaptureWarning)
+
+        writer.result = .success
+        XCTAssertTrue(store.copy(item))
+
+        XCTAssertNil(store.pasteboardWriteWarning)
+        XCTAssertEqual(store.captureWarning, independentCaptureWarning)
     }
 
     func testMissingImageDoesNotClearExistingClipboardOrReportCopySuccess() throws {
@@ -1057,14 +1270,20 @@ final class ClipboardStoreTests: XCTestCase {
     }
 
     func testExpiredTimedPauseResumesMonitoringAfterRelaunch() throws {
+        let base = Date(timeIntervalSinceReferenceDate: 20_000)
+        let clock = ManualClipboardClock(now: base)
         let defaults = makeDefaults()
         defaults.set(false, forKey: "monitoringEnabled")
-        defaults.set(Date().addingTimeInterval(-60), forKey: "monitoringPausedUntil")
+        defaults.set(base.addingTimeInterval(-60), forKey: "monitoringPausedUntil")
 
         let store = ClipboardStore(
             pasteboard: makePasteboard(),
             storage: ClipboardStorage(appDirectory: try makeTemporaryDirectory()),
-            defaults: defaults
+            defaults: defaults,
+            clock: ClipboardStoreClock(
+                now: { clock.now() },
+                sleep: { try await clock.sleep(nanoseconds: $0) }
+            )
         )
 
         XCTAssertTrue(store.isMonitoringEnabled)
@@ -1108,17 +1327,45 @@ final class ClipboardStoreTests: XCTestCase {
     }
 
     func testManualPauseRemainsDisabledAfterRelaunch() throws {
+        let clock = ManualClipboardClock(
+            now: Date(timeIntervalSinceReferenceDate: 30_000)
+        )
         let defaults = makeDefaults()
         defaults.set(false, forKey: "monitoringEnabled")
 
         let store = ClipboardStore(
             pasteboard: makePasteboard(),
             storage: ClipboardStorage(appDirectory: try makeTemporaryDirectory()),
-            defaults: defaults
+            defaults: defaults,
+            clock: ClipboardStoreClock(
+                now: { clock.now() },
+                sleep: { try await clock.sleep(nanoseconds: $0) }
+            )
         )
 
         XCTAssertFalse(store.isMonitoringEnabled)
         XCTAssertNil(store.monitoringPausedUntil)
+    }
+
+    func testManualClearRemovesPinnedAndUnpinnedItemsWhenRetentionIsDisabled() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let defaults = makeDefaults()
+        defaults.set(false, forKey: "keepPinnedOnClear")
+        storage.save([
+            ClipboardItem(text: "pinned", isPinned: true),
+            ClipboardItem(text: "unpinned"),
+        ])
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: storage,
+            defaults: defaults,
+            sourceApplicationProvider: { nil }
+        )
+
+        store.clearHistory()
+
+        XCTAssertTrue(store.items.isEmpty)
+        XCTAssertTrue(storage.load().isEmpty)
     }
 
     func testUnpinningAtHistoryLimitTrimsExcessItems() throws {
@@ -1190,6 +1437,18 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertTrue(reloadedImage.isPinned)
         try assertReadableImageData(storage.imageData(for: reloadedImage))
         XCTAssertNotNil(storage.thumbnailData(for: reloadedImage))
+
+        let reloadedPasteboard = makePasteboard()
+        let reloadedStore = ClipboardStore(
+            pasteboard: reloadedPasteboard,
+            storage: storage,
+            defaults: makeDefaults(),
+            sourceApplicationProvider: { nil }
+        )
+        let reloadedStoreImage = try XCTUnwrap(reloadedStore.items.first)
+        XCTAssertTrue(reloadedStoreImage.isPinned)
+        XCTAssertTrue(reloadedStore.copy(reloadedStoreImage))
+        try assertReadableImageData(reloadedPasteboard.data(forType: .png))
     }
 
     func testStaticClearOnQuitAlwaysKeepsPinnedItems() throws {
@@ -1281,10 +1540,11 @@ final class ClipboardStoreTests: XCTestCase {
     func testTextCaptureDoesNotDeduplicateAgainstImageCaption() throws {
         let pasteboard = makePasteboard()
         let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let imageData = try makePNGData(width: 2, height: 2)
         storage.save([
             ClipboardItem(
                 text: "same content",
-                image: ClipboardImagePayload(data: Data([1, 2, 3]), width: 1, height: 1)
+                image: ClipboardImagePayload(data: imageData, width: 2, height: 2)
             )
         ])
         let store = ClipboardStore(
@@ -1300,15 +1560,27 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertEqual(store.items.count, 2)
         XCTAssertEqual(store.items.filter { $0.contentKind == .text }.count, 1)
         XCTAssertEqual(store.items.filter { $0.contentKind == .image }.count, 1)
+
+        let imageItem = try XCTUnwrap(
+            store.items.first(where: { $0.contentKind == .image })
+        )
+        let textItem = try XCTUnwrap(
+            store.items.first(where: { $0.contentKind == .text })
+        )
+        XCTAssertTrue(store.copy(imageItem))
+        try assertReadableImageData(pasteboard.data(forType: .png))
+        XCTAssertTrue(store.copy(textItem))
+        XCTAssertEqual(pasteboard.string(forType: .string), "same content")
     }
 
     func testTransformationDoesNotDeduplicateAgainstImageCaption() throws {
         let pasteboard = makePasteboard()
         let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let imageData = try makePNGData(width: 2, height: 2)
         storage.save([
             ClipboardItem(
                 text: "HELLO",
-                image: ClipboardImagePayload(data: Data([1, 2, 3]), width: 1, height: 1)
+                image: ClipboardImagePayload(data: imageData, width: 2, height: 2)
             ),
             ClipboardItem(text: "hello")
         ])
@@ -1318,14 +1590,23 @@ final class ClipboardStoreTests: XCTestCase {
             defaults: makeDefaults()
         )
         let textItem = try XCTUnwrap(store.items.first(where: { $0.contentKind == .text }))
+        let originalImageItem = try XCTUnwrap(
+            store.items.first(where: { $0.contentKind == .image })
+        )
 
         store.copyWithTransformation(textItem, transformation: .uppercase)
 
         XCTAssertEqual(store.items.filter { $0.contentKind == .image }.count, 1)
         XCTAssertEqual(
+            store.items.first(where: { $0.contentKind == .image }),
+            originalImageItem
+        )
+        XCTAssertEqual(
             store.items.filter { $0.contentKind == .text && $0.text == "HELLO" }.count,
             1
         )
+        XCTAssertTrue(store.copy(originalImageItem))
+        try assertReadableImageData(pasteboard.data(forType: .png))
     }
 
     func testStripFormattingCopiesWhitespaceOnlyLegacyTextExactly() throws {
@@ -1616,6 +1897,40 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertEqual(store.items.first?.contentKind, .text)
         XCTAssertEqual(store.items.first?.text, "preserve me")
         XCTAssertNotNil(store.captureWarning)
+    }
+
+    func testOversizedImageFallsBackToTheFrozenTextSnapshot() async throws {
+        let pasteboard = makePasteboard()
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: ClipboardStorage(appDirectory: try makeTemporaryDirectory()),
+            defaults: makeDefaults(),
+            sourceApplicationProvider: { nil }
+        )
+        pasteboard.clearContents()
+        XCTAssertTrue(
+            pasteboard.setData(
+                Data(
+                    repeating: 0xFF,
+                    count: ClipboardImageProcessor.maximumInputBytes + 1
+                ),
+                forType: .png
+            )
+        )
+        XCTAssertTrue(pasteboard.setString("preserve oversized fallback", forType: .string))
+
+        store.pollPasteboardForChanges()
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("later pasteboard value", forType: .string))
+        try await waitForCapturedItem(in: store)
+
+        XCTAssertEqual(store.items.count, 1)
+        XCTAssertEqual(store.items.first?.contentKind, .text)
+        XCTAssertEqual(store.items.first?.text, "preserve oversized fallback")
+        XCTAssertEqual(
+            store.captureWarning,
+            ClipboardImageProcessingError.encodedDataTooLarge.localizedDescription
+        )
     }
 
     func testPollingCapturesJPEGThroughCanonicalImagePipeline() async throws {
@@ -1971,24 +2286,43 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertEqual(storage.load(), commit.items)
     }
 
+    func testAsyncMergeImportedImageRemainsCopyableAfterRelaunch() async throws {
+        try await assertAsyncImportedImageRemainsCopyableAfterRelaunch(
+            strategy: .merge
+        )
+    }
+
+    func testAsyncReplaceImportedImageRemainsCopyableAfterRelaunch() async throws {
+        try await assertAsyncImportedImageRemainsCopyableAfterRelaunch(
+            strategy: .replace
+        )
+    }
+
     func testNearLimitImportPreparationKeepsMainActorResponsive() async throws {
         let directory = try makeTemporaryDirectory()
         let sourceStorage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Source"))
         let importURL = directory.appendingPathComponent("near-limit.json")
-        sourceStorage.save([
+        let maximumRichText = Data(
+            repeating: 0x52,
+            count: ClipboardStorage.maximumImportedRichTextBytes
+        )
+        let maximumHTML = Data(
+            repeating: 0x48,
+            count: ClipboardStorage.maximumImportedRichTextBytes
+        )
+        sourceStorage.save((0..<3).map { index in
             ClipboardItem(
-                text: "near limit",
-                rtfData: Data(
-                    repeating: 0x52,
-                    count: ClipboardStorage.maximumImportedRichTextBytes
-                ),
-                htmlData: Data(
-                    repeating: 0x48,
-                    count: ClipboardStorage.maximumImportedRichTextBytes
-                )
+                text: "near limit \(index)",
+                rtfData: maximumRichText,
+                htmlData: maximumHTML
             )
-        ])
+        })
         try sourceStorage.export(sourceStorage.load(), to: importURL)
+        let encodedSize = try XCTUnwrap(
+            importURL.resourceValues(forKeys: [.fileSizeKey]).fileSize
+        )
+        XCTAssertGreaterThan(encodedSize, 75 * 1024 * 1024)
+        XCTAssertLessThan(encodedSize, ClipboardStorage.maximumImportBytes)
         let store = ClipboardStore(
             pasteboard: makePasteboard(),
             storage: ClipboardStorage(appDirectory: directory.appendingPathComponent("Store")),
@@ -1996,24 +2330,40 @@ final class ClipboardStoreTests: XCTestCase {
             sourceApplicationProvider: { nil }
         )
 
+        let startedAt = ContinuousClock.now
         let preparation = Task {
             try await store.prepareImport(from: importURL)
         }
-        var mainActorHeartbeats = 0
-        for _ in 0..<10_000 {
+        for _ in 0..<100 where !store.isTransferBusy {
             await Task.yield()
-            if store.isTransferBusy {
-                mainActorHeartbeats += 1
-            } else if mainActorHeartbeats > 0 {
-                break
-            }
+        }
+
+        var mainActorHeartbeats = 0
+        var maximumHeartbeatGap = Duration.zero
+        var previousHeartbeat = ContinuousClock.now
+        while store.isTransferBusy {
+            try await Task.sleep(nanoseconds: 10_000_000)
+            let heartbeat = ContinuousClock.now
+            maximumHeartbeatGap = max(
+                maximumHeartbeatGap,
+                previousHeartbeat.duration(to: heartbeat)
+            )
+            previousHeartbeat = heartbeat
+            mainActorHeartbeats += 1
         }
         let artifact = try await preparation.value
+        let elapsed = startedAt.duration(to: .now)
 
-        XCTAssertGreaterThan(mainActorHeartbeats, 0)
-        XCTAssertEqual(artifact.preview.itemCount, 1)
-        XCTAssertEqual(artifact.items.first?.rtfData?.count, 10 * 1024 * 1024)
-        XCTAssertEqual(artifact.items.first?.htmlData?.count, 10 * 1024 * 1024)
+        XCTAssertGreaterThanOrEqual(mainActorHeartbeats, 10)
+        XCTAssertLessThan(maximumHeartbeatGap, .milliseconds(250))
+        XCTAssertLessThan(elapsed, .seconds(8))
+        XCTAssertEqual(artifact.preview.itemCount, 3)
+        XCTAssertTrue(
+            artifact.items.allSatisfy {
+                $0.rtfData?.count == ClipboardStorage.maximumImportedRichTextBytes
+                    && $0.htmlData?.count == ClipboardStorage.maximumImportedRichTextBytes
+            }
+        )
     }
 
     func testImportProjectionDisclosesDeduplicationExpirationAndLimitDrops() async throws {
@@ -2224,6 +2574,37 @@ final class ClipboardStoreTests: XCTestCase {
         return try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
     }
 
+    private func makeSolidPNGData(width: Int, height: Int) throws -> Data {
+        let context = try XCTUnwrap(
+            CGContext(
+                data: nil,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+        )
+        context.setFillColor(
+            CGColor(red: 0.1, green: 0.2, blue: 0.9, alpha: 1)
+        )
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let image = try XCTUnwrap(context.makeImage())
+        let data = NSMutableData()
+        let destination = try XCTUnwrap(
+            CGImageDestinationCreateWithData(
+                data,
+                UTType.png.identifier as CFString,
+                1,
+                nil
+            )
+        )
+        CGImageDestinationAddImage(destination, image, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return data as Data
+    }
+
     private func permissions(at url: URL) throws -> Int {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         return attributes[.posixPermissions] as? Int ?? -1
@@ -2324,5 +2705,60 @@ final class ClipboardStoreTests: XCTestCase {
             XCTAssertEqual(persistedTexts, ["imported"])
         }
         XCTAssertEqual(Set(store.items.map(\.text)), persistedTexts)
+    }
+
+    private func assertAsyncImportedImageRemainsCopyableAfterRelaunch(
+        strategy: ClipboardImportStrategy
+    ) async throws {
+        let directory = try makeTemporaryDirectory()
+        let storage = ClipboardStorage(
+            appDirectory: directory.appendingPathComponent("Store")
+        )
+        let sourceStorage = ClipboardStorage(
+            appDirectory: directory.appendingPathComponent("Source")
+        )
+        let importURL = directory.appendingPathComponent("image-import.json")
+        let imageData = try makePNGData(width: 4, height: 3)
+        storage.save([ClipboardItem(text: "existing")])
+        sourceStorage.save([
+            ClipboardItem(
+                text: "imported image",
+                image: ClipboardImagePayload(
+                    data: imageData,
+                    width: 4,
+                    height: 3
+                )
+            )
+        ])
+        try sourceStorage.export(sourceStorage.load(), to: importURL)
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: storage,
+            defaults: makeDefaults(),
+            sourceApplicationProvider: { nil }
+        )
+
+        let artifact = try await store.prepareImport(from: importURL)
+        let plan = store.importPlan(for: artifact)
+        _ = try await store.importHistory(plan: plan, strategy: strategy)
+
+        let reloadedPasteboard = makePasteboard()
+        let reloadedStore = ClipboardStore(
+            pasteboard: reloadedPasteboard,
+            storage: storage,
+            defaults: makeDefaults(),
+            sourceApplicationProvider: { nil }
+        )
+        let importedImage = try XCTUnwrap(
+            reloadedStore.items.first(where: { $0.contentKind == .image })
+        )
+        XCTAssertTrue(reloadedStore.copy(importedImage))
+        try assertReadableImageData(reloadedPasteboard.data(forType: .png))
+        switch strategy {
+        case .merge:
+            XCTAssertTrue(reloadedStore.items.contains { $0.text == "existing" })
+        case .replace:
+            XCTAssertFalse(reloadedStore.items.contains { $0.text == "existing" })
+        }
     }
 }

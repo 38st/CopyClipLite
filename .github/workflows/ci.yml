@@ -13,7 +13,11 @@ jobs:
         with:
           fetch-depth: 0
       - name: Validate shell scripts
-        run: bash -n script/*.sh
+        run: bash -n script/*.sh script/tests/*.sh
+      - name: Run installer process harness
+        run: ./script/tests/task_031_harness.sh
+      - name: Verify release contract
+        run: bash script/tests/task_018_release_harness.sh
       - name: Run tests
         run: ./script/check_coverage.sh
       - name: Enforce strict concurrency warnings

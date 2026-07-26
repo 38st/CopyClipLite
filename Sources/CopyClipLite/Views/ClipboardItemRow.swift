@@ -67,6 +67,10 @@ struct ClipboardItemRow: View {
             }
             .buttonStyle(.plain)
             .help("Use clip")
+            // Attach the drag source to the primary hit-tested control. An
+            // outer-row drag modifier loses gesture arbitration to this Button
+            // and never asks the item provider to vend its representations.
+            .onDrag(dragProvider)
             .accessibilityLabel(item.previewText)
             .accessibilityValue(accessibilityValue)
             .accessibilityAddTraits(isSelected ? .isSelected : [])
@@ -77,6 +81,15 @@ struct ClipboardItemRow: View {
                 togglePin
             )
             .accessibilityAction(named: "Delete clip", delete)
+
+            Image(systemName: "line.3.horizontal")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .frame(width: 18, height: 28)
+                .contentShape(Rectangle())
+                .help("Drag clip")
+                .onDrag(dragProvider)
+                .accessibilityHidden(true)
 
             VStack(spacing: 6) {
                 Button(action: togglePin) {
@@ -132,7 +145,6 @@ struct ClipboardItemRow: View {
             Button("Delete", role: .destructive, action: delete)
         }
         .id(rowID)
-        .onDrag(dragProvider)
     }
 
     private var backgroundColor: Color {

@@ -463,9 +463,31 @@ final class ClipboardStore: ObservableObject {
             }
             return provider
         case .image:
-            let provider = NSItemProvider()
-            provider.suggestedName = "CopyClip Image.png"
             let storage = storage
+            let stageImageFile: @Sendable () throws -> URL = {
+                guard let data = storage.imageData(for: item) else {
+                    throw ClipboardStorageError.missingImageData
+                }
+                let directory = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("CopyClipLite-Drag", isDirectory: true)
+                try FileManager.default.createDirectory(
+                    at: directory,
+                    withIntermediateDirectories: true
+                )
+                let url = directory.appendingPathComponent(
+                    "\(item.id.uuidString)-CopyClip-Image.png"
+                )
+                try data.write(to: url, options: [.atomic])
+                return url
+            }
+            // A URL-backed provider is the native Finder contract. The drag
+            // closure is evaluated only after SwiftUI recognizes the gesture,
+            // so this staging work does not run while rows are being rendered.
+            let stagedImageURL = try? stageImageFile()
+            let provider = stagedImageURL
+                .flatMap(NSItemProvider.init(contentsOf:))
+                ?? NSItemProvider()
+            provider.suggestedName = "CopyClip Image.png"
             provider.registerDataRepresentation(
                 forTypeIdentifier: UTType.png.identifier,
                 visibility: .all
@@ -479,22 +501,8 @@ final class ClipboardStore: ObservableObject {
                 fileOptions: [],
                 visibility: .all
             ) { completion in
-                guard let data = storage.imageData(for: item) else {
-                    completion(nil, false, ClipboardStorageError.missingImageData)
-                    return nil
-                }
                 do {
-                    let directory = FileManager.default.temporaryDirectory
-                        .appendingPathComponent("CopyClipLite-Drag", isDirectory: true)
-                    try FileManager.default.createDirectory(
-                        at: directory,
-                        withIntermediateDirectories: true
-                    )
-                    let url = directory.appendingPathComponent(
-                        "\(item.id.uuidString)-CopyClip-Image.png"
-                    )
-                    try data.write(to: url, options: [.atomic])
-                    completion(url, false, nil)
+                    completion(try stageImageFile(), false, nil)
                 } catch {
                     completion(nil, false, error)
                 }

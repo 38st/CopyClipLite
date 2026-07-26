@@ -2120,10 +2120,10 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertEqual(pasteboard.data(forType: .html), htmlData)
     }
 
-    func testTextDragProviderOffersPlainAndRichRepresentationsWithoutMutation() throws {
+    func testTextDragProviderOffersPlainAndRichRepresentationsWithoutMutation() async throws {
         let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
-        let rtfData = Data("rtf".utf8)
-        let htmlData = Data("html".utf8)
+        let rtfData = Data(#"{\rtf1\ansi drag me}"#.utf8)
+        let htmlData = Data("<strong>drag me</strong>".utf8)
         storage.save([
             ClipboardItem(text: "drag me", rtfData: rtfData, htmlData: htmlData)
         ])
@@ -2139,6 +2139,34 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier))
         XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.rtf.identifier))
         XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.html.identifier))
+        let loadedRTF: Data = try await withCheckedThrowingContinuation { continuation in
+            provider.loadDataRepresentation(forTypeIdentifier: UTType.rtf.identifier) {
+                data,
+                error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if let data {
+                    continuation.resume(returning: data)
+                } else {
+                    continuation.resume(throwing: ClipboardStorageError.missingImageData)
+                }
+            }
+        }
+        let loadedHTML: Data = try await withCheckedThrowingContinuation { continuation in
+            provider.loadDataRepresentation(forTypeIdentifier: UTType.html.identifier) {
+                data,
+                error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if let data {
+                    continuation.resume(returning: data)
+                } else {
+                    continuation.resume(throwing: ClipboardStorageError.missingImageData)
+                }
+            }
+        }
+        XCTAssertEqual(loadedRTF, rtfData)
+        XCTAssertEqual(loadedHTML, htmlData)
         XCTAssertEqual(store.items.first?.copyCount, 1)
     }
 
@@ -2158,6 +2186,7 @@ final class ClipboardStoreTests: XCTestCase {
         let item = try XCTUnwrap(store.items.first)
         let provider = store.dragItemProvider(for: item)
 
+        XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier))
         let loadedData: Data = try await withCheckedThrowingContinuation { continuation in
             provider.loadDataRepresentation(forTypeIdentifier: UTType.png.identifier) {
                 data,
@@ -2191,6 +2220,23 @@ final class ClipboardStoreTests: XCTestCase {
             }
         }
         XCTAssertEqual(promisedFileData, pngData)
+        let promisedFileURL: URL = try await withCheckedThrowingContinuation { continuation in
+            provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) {
+                data,
+                error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if let data,
+                          let url = URL(dataRepresentation: data, relativeTo: nil) {
+                    continuation.resume(returning: url)
+                } else {
+                    continuation.resume(throwing: ClipboardStorageError.missingImageData)
+                }
+            }
+        }
+        XCTAssertTrue(promisedFileURL.isFileURL)
+        XCTAssertEqual(promisedFileURL.pathExtension.lowercased(), "png")
+        XCTAssertEqual(try Data(contentsOf: promisedFileURL), pngData)
         XCTAssertEqual(store.items.first?.copyCount, 1)
     }
 

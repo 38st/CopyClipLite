@@ -116,6 +116,59 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertEqual(store.visibleItems(matching: "image").map(\.id), [item.id])
     }
 
+    func testDeletingAnotherClipKeepsLiveCapturedImageFilesReadable() async throws {
+        let pasteboard = makePasteboard()
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: storage,
+            defaults: makeDefaults()
+        )
+        let pngData = try makePNGData(width: 4, height: 4)
+
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setData(pngData, forType: .png))
+        store.pollPasteboardForChanges()
+        try await waitForCapturedItem(in: store)
+        let imageID = try XCTUnwrap(store.items.first?.id)
+
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("delete me", forType: .string))
+        store.pollPasteboardForChanges()
+        let textItem = try XCTUnwrap(store.items.first(where: { $0.text == "delete me" }))
+
+        store.delete(textItem)
+
+        let reloadedImage = try XCTUnwrap(storage.load().first(where: { $0.id == imageID }))
+        XCTAssertEqual(storage.imageData(for: reloadedImage), pngData)
+        XCTAssertNotNil(storage.thumbnailData(for: reloadedImage))
+    }
+
+    func testClearKeepingPinnedKeepsLiveCapturedImageFilesReadable() async throws {
+        let pasteboard = makePasteboard()
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: storage,
+            defaults: makeDefaults()
+        )
+        let pngData = try makePNGData(width: 5, height: 5)
+
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setData(pngData, forType: .png))
+        store.pollPasteboardForChanges()
+        try await waitForCapturedItem(in: store)
+        let imageItem = try XCTUnwrap(store.items.first)
+        store.togglePin(imageItem)
+
+        store.clearHistory()
+
+        let reloadedImage = try XCTUnwrap(storage.load().first)
+        XCTAssertTrue(reloadedImage.isPinned)
+        XCTAssertEqual(storage.imageData(for: reloadedImage), pngData)
+        XCTAssertNotNil(storage.thumbnailData(for: reloadedImage))
+    }
+
     func testCopyImageItemWritesImagePasteboardTypes() throws {
         let pasteboard = makePasteboard()
         let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
@@ -325,7 +378,35 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertEqual(store.items.first?.text, "pinned")
     }
 
-    func testStaticClearOnQuitRespectsKeepPinnedOnClearFalse() throws {
+    func testClearUnpinnedOnQuitKeepsLiveCapturedPinnedImageFilesReadable() async throws {
+        let pasteboard = makePasteboard()
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let defaults = makeDefaults()
+        defaults.set(true, forKey: "clearUnpinnedOnQuit")
+        defaults.set(false, forKey: "keepPinnedOnClear")
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: storage,
+            defaults: defaults
+        )
+        let pngData = try makePNGData(width: 6, height: 6)
+
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setData(pngData, forType: .png))
+        store.pollPasteboardForChanges()
+        try await waitForCapturedItem(in: store)
+        let imageItem = try XCTUnwrap(store.items.first)
+        store.togglePin(imageItem)
+
+        store.clearUnpinnedHistoryOnQuitIfNeeded()
+
+        let reloadedImage = try XCTUnwrap(storage.load().first)
+        XCTAssertTrue(reloadedImage.isPinned)
+        XCTAssertEqual(storage.imageData(for: reloadedImage), pngData)
+        XCTAssertNotNil(storage.thumbnailData(for: reloadedImage))
+    }
+
+    func testStaticClearOnQuitAlwaysKeepsPinnedItems() throws {
         let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
         let defaults = makeDefaults()
         defaults.set(true, forKey: "clearUnpinnedOnQuit")
@@ -338,7 +419,7 @@ final class ClipboardStoreTests: XCTestCase {
         ClipboardStore.clearUnpinnedHistoryOnQuitIfNeeded(storage: storage, defaults: defaults)
 
         let remaining = storage.load()
-        XCTAssertTrue(remaining.isEmpty)
+        XCTAssertEqual(remaining.map(\.text), ["pinned"])
     }
 
     func testCopyWithTransformationRecordsTransformedText() throws {
@@ -510,6 +591,49 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertEqual(try permissions(at: backupURL), 0o600)
     }
 
+    func testPendingPersistCannotOverwriteMergedImport() async throws {
+        try await assertPendingPersistCannotOverwriteImport(strategy: .merge)
+    }
+
+    func testPendingPersistCannotOverwriteReplacedImport() async throws {
+        try await assertPendingPersistCannotOverwriteImport(strategy: .replace)
+    }
+
+    func testFailedDeletePersistKeepsPreviouslyCommittedImageReadable() throws {
+        final class FaultSwitch {
+            var failManifestWrite = false
+        }
+
+        let faultSwitch = FaultSwitch()
+        let directory = try makeTemporaryDirectory()
+        let storage = ClipboardStorage(
+            appDirectory: directory,
+            faultInjector: { point in
+                if case .manifestWrite = point, faultSwitch.failManifestWrite {
+                    throw CocoaError(.fileWriteUnknown)
+                }
+            }
+        )
+        let pngData = try makePNGData(width: 3, height: 3)
+        storage.save([
+            ClipboardItem(image: ClipboardImagePayload(data: pngData, width: 3, height: 3)),
+            ClipboardItem(text: "keep")
+        ])
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: storage,
+            defaults: makeDefaults()
+        )
+        let imageItem = try XCTUnwrap(store.items.first(where: { $0.isImage }))
+        faultSwitch.failManifestWrite = true
+
+        store.delete(imageItem)
+
+        XCTAssertNotNil(store.storageErrorMessage)
+        let committedImage = try XCTUnwrap(storage.load().first(where: { $0.isImage }))
+        XCTAssertEqual(storage.imageData(for: committedImage), pngData)
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("CopyClipLiteTests-\(UUID().uuidString)", isDirectory: true)
@@ -566,5 +690,37 @@ final class ClipboardStoreTests: XCTestCase {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
         XCTAssertFalse(store.items.isEmpty, "Timed out waiting for background image processing")
+    }
+
+    private func assertPendingPersistCannotOverwriteImport(
+        strategy: ClipboardImportStrategy
+    ) async throws {
+        let directory = try makeTemporaryDirectory()
+        let storage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Store"))
+        let sourceStorage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Source"))
+        let importURL = directory.appendingPathComponent("import-race.json")
+        storage.save([ClipboardItem(text: "existing")])
+        sourceStorage.save([ClipboardItem(text: "imported")])
+        try sourceStorage.export(sourceStorage.load(), to: importURL)
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: storage,
+            defaults: makeDefaults(),
+            sourceApplicationProvider: { nil }
+        )
+        let existingItem = try XCTUnwrap(store.items.first)
+        store.togglePin(existingItem)
+
+        try store.importHistory(from: importURL, strategy: strategy)
+        try await Task.sleep(nanoseconds: 350_000_000)
+
+        let persistedTexts = Set(storage.load().map(\.text))
+        switch strategy {
+        case .merge:
+            XCTAssertEqual(persistedTexts, ["existing", "imported"])
+        case .replace:
+            XCTAssertEqual(persistedTexts, ["imported"])
+        }
+        XCTAssertEqual(Set(store.items.map(\.text)), persistedTexts)
     }
 }

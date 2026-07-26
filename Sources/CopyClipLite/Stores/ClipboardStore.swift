@@ -7,6 +7,24 @@ enum ClipboardImportStrategy {
     case replace
 }
 
+private final class PersistenceGeneration: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: UInt64 = 0
+
+    func advance() -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        value &+= 1
+        return value
+    }
+
+    func isCurrent(_ generation: UInt64) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value == generation
+    }
+}
+
 @MainActor
 final class ClipboardStore: ObservableObject {
     private enum DefaultsKey {
@@ -86,6 +104,7 @@ final class ClipboardStore: ObservableObject {
     private var monitoringResumeTask: Task<Void, Never>?
     nonisolated(unsafe) private var persistWorkItem: DispatchWorkItem?
     private let persistenceQueue = DispatchQueue(label: "CopyClipLite.persistence", qos: .utility)
+    private let persistenceGeneration = PersistenceGeneration()
     private let imageProcessor = ClipboardImageProcessingService()
 
     var storageLocation: URL {
@@ -190,6 +209,7 @@ final class ClipboardStore: ObservableObject {
         clearCopiedIndicatorTask?.cancel()
         monitoringResumeTask?.cancel()
         persistWorkItem?.cancel()
+        _ = persistenceGeneration.advance()
         if let workspaceActivationObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(workspaceActivationObserver)
         }
@@ -277,11 +297,18 @@ final class ClipboardStore: ObservableObject {
         }
 
         candidateItems = prunedItems(candidateItems)
-        let backupURL = try storage.backup(items, reason: "pre-import")
-        try storage.saveValidated(candidateItems)
-        items = try storage.loadResult().get().sorted { $0.lastCopiedAt > $1.lastCopiedAt }
+        invalidatePendingPersist()
+        let currentItems = items
+        let transactionResult = try persistenceQueue.sync {
+            try storage.saveValidated(currentItems)
+            let backupURL = try storage.backup(currentItems, reason: "pre-import")
+            try storage.saveValidated(candidateItems)
+            let loadedItems = try storage.loadResult().get().sorted { $0.lastCopiedAt > $1.lastCopiedAt }
+            return (backupURL, loadedItems)
+        }
+        items = transactionResult.1
         storageErrorMessage = nil
-        return backupURL
+        return transactionResult.0
     }
 
     @discardableResult
@@ -366,7 +393,6 @@ final class ClipboardStore: ObservableObject {
     func delete(_ item: ClipboardItem) {
         items.removeAll { $0.id == item.id }
         flushPendingPersist()
-        storage.removeUnreferencedImageFiles(keeping: items)
     }
 
     func clearHistory() {
@@ -377,7 +403,6 @@ final class ClipboardStore: ObservableObject {
         }
 
         flushPendingPersist()
-        storage.removeUnreferencedImageFiles(keeping: items)
     }
 
     private func startMonitoring() {
@@ -477,10 +502,8 @@ final class ClipboardStore: ObservableObject {
             return
         }
 
-        let keepPinned = defaults.object(forKey: DefaultsKey.keepPinnedOnClear) as? Bool ?? true
-        let itemsToKeep = keepPinned ? storage.load().filter(\.isPinned) : []
-        storage.save(itemsToKeep)
-        storage.removeUnreferencedImageFiles(keeping: itemsToKeep)
+        let itemsToKeep = storage.load().filter(\.isPinned)
+        _ = try? storage.saveValidated(itemsToKeep)
     }
 
     func clearUnpinnedHistoryOnQuitIfNeeded() {
@@ -489,14 +512,9 @@ final class ClipboardStore: ObservableObject {
             return
         }
 
-        if keepPinnedOnClear {
-            items.removeAll { !$0.isPinned }
-        } else {
-            items.removeAll()
-        }
+        items.removeAll { !$0.isPinned }
 
         flushPendingPersist()
-        storage.removeUnreferencedImageFiles(keeping: items)
     }
 
     private func record(
@@ -758,9 +776,14 @@ final class ClipboardStore: ObservableObject {
 
     private func persist() {
         persistWorkItem?.cancel()
+        let generation = persistenceGeneration.advance()
         let snapshot = items
         let storageRef = storage
+        let persistenceGeneration = persistenceGeneration
         let workItem = DispatchWorkItem { [weak self] in
+            guard persistenceGeneration.isCurrent(generation) else {
+                return
+            }
             do {
                 try storageRef.saveValidated(snapshot)
             } catch {
@@ -773,19 +796,25 @@ final class ClipboardStore: ObservableObject {
         persistenceQueue.asyncAfter(deadline: .now() + 0.15, execute: workItem)
     }
 
-    func flushPendingPersist() {
+    @discardableResult
+    func flushPendingPersist() -> Bool {
+        invalidatePendingPersist()
+        let snapshot = items
+        do {
+            _ = try persistenceQueue.sync {
+                try storage.saveValidated(snapshot)
+            }
+            return true
+        } catch {
+            storageErrorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    private func invalidatePendingPersist() {
         persistWorkItem?.cancel()
         persistWorkItem = nil
-        let snapshot = items
-        persistenceQueue.sync {
-            do {
-                try storage.saveValidated(snapshot)
-            } catch {
-                DispatchQueue.main.async { [weak self] in
-                    self?.storageErrorMessage = error.localizedDescription
-                }
-            }
-        }
+        _ = persistenceGeneration.advance()
     }
 
     func dismissStorageError() {

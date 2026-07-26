@@ -41,6 +41,11 @@ struct ClipboardImportPreview: Equatable {
     let imageCount: Int
 }
 
+enum ClipboardStorageFaultPoint {
+    case imageWrite
+    case manifestWrite
+}
+
 struct ClipboardStorage {
     static let maximumImportBytes = 100 * 1024 * 1024
     static let maximumImportedItems = 1_000
@@ -51,10 +56,16 @@ struct ClipboardStorage {
     let imageDirectoryURL: URL
 
     private let fileManager: FileManager
+    private let faultInjector: ((ClipboardStorageFaultPoint) throws -> Void)?
     private let lock = NSRecursiveLock()
 
-    init(fileManager: FileManager = .default, appDirectory: URL? = nil) {
+    init(
+        fileManager: FileManager = .default,
+        appDirectory: URL? = nil,
+        faultInjector: ((ClipboardStorageFaultPoint) throws -> Void)? = nil
+    ) {
         self.fileManager = fileManager
+        self.faultInjector = faultInjector
 
         let appDirectory = appDirectory ?? Self.defaultAppDirectory(fileManager: fileManager)
         self.imageDirectoryURL = appDirectory.appendingPathComponent("Images", isDirectory: true)
@@ -87,38 +98,46 @@ struct ClipboardStorage {
         }
 
         let decoder = JSONDecoder()
+        var items: [ClipboardItem]
         do {
-            var items = try decoder.decode([ClipboardItem].self, from: data)
-            let wasMigrated = externalizeImageFiles(in: &items)
-            hydrateImageThumbnails(in: &items)
-            if wasMigrated {
-                guard writeHistory(items) else {
-                    return .failure(.persistenceFailed)
-                }
-                removeUnreferencedImageFiles(keeping: items)
-            }
-            return .success(items)
+            items = try decoder.decode([ClipboardItem].self, from: data)
         } catch {
             let backupURL = backupExistingStore(reason: "invalid")
             return .failure(.invalidHistory(backupFileName: backupURL?.lastPathComponent))
         }
+
+        do {
+            let wasMigrated = try externalizeImageFiles(in: &items)
+            hydrateImageThumbnails(in: &items)
+            if wasMigrated {
+                try writeHistory(items)
+                removeUnreferencedImageFiles(keeping: items)
+            }
+            return .success(items)
+        } catch {
+            return .failure(.persistenceFailed)
+        }
     }
 
     func save(_ items: [ClipboardItem]) {
-        try? saveValidated(items)
+        _ = try? saveValidated(items)
     }
 
-    func saveValidated(_ items: [ClipboardItem]) throws {
+    @discardableResult
+    func saveValidated(_ items: [ClipboardItem]) throws -> [ClipboardItem] {
         lock.lock()
         defer { lock.unlock() }
 
         var persistedItems = items
-        externalizeImageFiles(in: &persistedItems)
-        guard writeHistory(persistedItems) else {
+        do {
+            try externalizeImageFiles(in: &persistedItems)
+            try writeHistory(persistedItems)
+        } catch {
             throw ClipboardStorageError.persistenceFailed
         }
 
         removeUnreferencedImageFiles(keeping: persistedItems)
+        return persistedItems
     }
 
     func imageData(for item: ClipboardItem) -> Data? {
@@ -223,25 +242,19 @@ struct ClipboardStorage {
         return backupURL
     }
 
-    @discardableResult
-    private func writeHistory(_ items: [ClipboardItem]) -> Bool {
+    private func writeHistory(_ items: [ClipboardItem]) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
 
-        guard let data = try? encoder.encode(items) else {
-            return false
-        }
-
-        guard (try? data.write(to: fileURL, options: [.atomic])) != nil else {
-            return false
-        }
+        let data = try encoder.encode(items)
+        try faultInjector?(.manifestWrite)
+        try data.write(to: fileURL, options: [.atomic])
 
         try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
-        return true
     }
 
     @discardableResult
-    private func externalizeImageFiles(in items: inout [ClipboardItem]) -> Bool {
+    private func externalizeImageFiles(in items: inout [ClipboardItem]) throws -> Bool {
         var didChange = false
 
         for index in items.indices {
@@ -250,25 +263,30 @@ struct ClipboardStorage {
             }
 
             if let data = image.data {
-                let fileName = safeFileName(image.fileName) ?? "\(items[index].id.uuidString).png"
-                guard let fileURL = safeImageURL(for: fileName) else { continue }
-
-                if writeImageData(data, to: fileURL) {
-                    image.fileName = fileName
-                    image.data = nil
-                    didChange = true
+                let contentHash = ClipboardImageProcessor.contentHash(for: data)
+                let fileName = "\(items[index].id.uuidString)-\(contentHash).png"
+                guard let fileURL = safeImageURL(for: fileName) else {
+                    throw ClipboardStorageError.persistenceFailed
                 }
+
+                try writeImageData(data, to: fileURL)
+                image.fileName = fileName
+                image.data = nil
+                image.contentHash = contentHash
+                didChange = true
             }
 
             if let thumbnailData = image.thumbnailData {
-                let fileName = safeFileName(image.thumbnailFileName) ?? "\(items[index].id.uuidString)-thumb.png"
-                guard let fileURL = safeImageURL(for: fileName) else { continue }
-
-                if writeImageData(thumbnailData, to: fileURL) {
-                    image.thumbnailFileName = fileName
-                    image.thumbnailData = nil
-                    didChange = true
+                let thumbnailHash = ClipboardImageProcessor.contentHash(for: thumbnailData)
+                let fileName = "\(items[index].id.uuidString)-thumb-\(thumbnailHash).png"
+                guard let fileURL = safeImageURL(for: fileName) else {
+                    throw ClipboardStorageError.persistenceFailed
                 }
+
+                try writeImageData(thumbnailData, to: fileURL)
+                image.thumbnailFileName = fileName
+                image.thumbnailData = nil
+                didChange = true
             }
 
             items[index].image = image
@@ -320,16 +338,14 @@ struct ClipboardStorage {
         return portable
     }
 
-    private func writeImageData(_ data: Data, to url: URL) -> Bool {
-        guard (try? data.write(to: url, options: [.atomic])) != nil else {
-            return false
-        }
+    private func writeImageData(_ data: Data, to url: URL) throws {
+        try faultInjector?(.imageWrite)
+        try data.write(to: url, options: [.atomic])
 
         try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-        return true
     }
 
-    func removeUnreferencedImageFiles(keeping items: [ClipboardItem]) {
+    private func removeUnreferencedImageFiles(keeping items: [ClipboardItem]) {
         guard let fileNames = try? fileManager.contentsOfDirectory(atPath: imageDirectoryURL.path) else {
             return
         }
@@ -399,13 +415,6 @@ struct ClipboardStorage {
                 }
             }
         }
-    }
-
-    private func safeFileName(_ fileName: String?) -> String? {
-        guard let fileName, safeImageURL(for: fileName) != nil else {
-            return nil
-        }
-        return fileName
     }
 
     private func safeImageURL(for fileName: String) -> URL? {

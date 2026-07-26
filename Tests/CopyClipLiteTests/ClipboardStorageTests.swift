@@ -187,6 +187,55 @@ final class ClipboardStorageTests: XCTestCase {
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: storage.imageDirectoryURL.path).isEmpty)
     }
 
+    func testFailedManifestCommitPreservesPreviousImageGeneration() throws {
+        final class FaultSwitch {
+            var failManifestWrite = false
+        }
+
+        let faultSwitch = FaultSwitch()
+        let storage = ClipboardStorage(
+            appDirectory: try makeTemporaryDirectory(),
+            faultInjector: { point in
+                if case .manifestWrite = point, faultSwitch.failManifestWrite {
+                    throw CocoaError(.fileWriteUnknown)
+                }
+            }
+        )
+        let itemID = UUID()
+        let oldData = Data([0, 1, 2, 3])
+        let newData = Data([9, 8, 7, 6])
+        try storage.saveValidated([
+            ClipboardItem(
+                id: itemID,
+                image: ClipboardImagePayload(data: oldData, width: 1, height: 1)
+            )
+        ])
+        let oldItem = try XCTUnwrap(storage.load().first)
+        let oldFileName = try XCTUnwrap(oldItem.image?.fileName)
+        faultSwitch.failManifestWrite = true
+
+        XCTAssertThrowsError(
+            try storage.saveValidated([
+                ClipboardItem(
+                    id: itemID,
+                    image: ClipboardImagePayload(data: newData, width: 1, height: 1)
+                )
+            ])
+        )
+
+        let stillCommittedItem = try XCTUnwrap(storage.load().first)
+        XCTAssertEqual(stillCommittedItem.image?.fileName, oldFileName)
+        XCTAssertEqual(storage.imageData(for: stillCommittedItem), oldData)
+
+        faultSwitch.failManifestWrite = false
+        try storage.saveValidated([stillCommittedItem])
+
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: storage.imageDirectoryURL.path),
+            [oldFileName]
+        )
+    }
+
     func testImportAcceptsPortableImageRecords() throws {
         let directory = try makeTemporaryDirectory()
         let sourceStorage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Source"))

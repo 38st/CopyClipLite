@@ -1,5 +1,103 @@
 import AppKit
-import Foundation
+@preconcurrency import Foundation
+
+struct CopyClipVersion: Comparable, Equatable, Sendable {
+    let major: Int
+    let minor: Int
+    let patch: Int
+
+    init?(_ value: String) {
+        let normalized = value.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
+        let components = normalized.split(separator: ".", omittingEmptySubsequences: false)
+        guard (2...3).contains(components.count),
+              components.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) }),
+              let major = Int(components[0]),
+              let minor = Int(components[1]) else {
+            return nil
+        }
+        let patch = components.count == 3 ? Int(components[2]) : 0
+        guard let patch else { return nil }
+        self.major = major
+        self.minor = minor
+        self.patch = patch
+    }
+
+    static func < (lhs: CopyClipVersion, rhs: CopyClipVersion) -> Bool {
+        (lhs.major, lhs.minor, lhs.patch) < (rhs.major, rhs.minor, rhs.patch)
+    }
+}
+
+struct CopyClipRelease: Sendable, Equatable {
+    let version: String
+    let url: URL
+}
+
+protocol UpdateFeedLoading: Sendable {
+    func latestRelease(from url: URL, userAgent: String) async throws -> CopyClipRelease
+}
+
+final class GitHubUpdateFeedLoader: UpdateFeedLoading, @unchecked Sendable {
+    func latestRelease(from url: URL, userAgent: String) async throws -> CopyClipRelease {
+        var request = URLRequest(url: url)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+
+        let (data, response) = try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<(Data, URLResponse), Error>) in
+            URLSession.shared.dataTask(with: request) { data, response, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                guard let data, let response else {
+                    continuation.resume(throwing: UpdateFeedError.invalidResponse)
+                    return
+                }
+                continuation.resume(returning: (data, response))
+            }.resume()
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200..<300).contains(httpResponse.statusCode) else {
+            throw UpdateFeedError.invalidResponse
+        }
+        let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
+        let version = release.tagName.trimmingCharacters(
+            in: CharacterSet(charactersIn: "vV")
+        )
+        guard CopyClipVersion(version) != nil else {
+            throw UpdateFeedError.invalidVersion
+        }
+        return CopyClipRelease(version: version, url: release.htmlURL)
+    }
+
+    private struct GitHubRelease: Decodable {
+        let tagName: String
+        let htmlURL: URL
+
+        enum CodingKeys: String, CodingKey {
+            case tagName = "tag_name"
+            case htmlURL = "html_url"
+        }
+    }
+}
+
+enum UpdateFeedError: LocalizedError {
+    case invalidResponse
+    case invalidVersion
+    case unavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidResponse:
+            "The update service returned an invalid response. Try again later."
+        case .invalidVersion:
+            "The update service returned an invalid version."
+        case .unavailable:
+            "No public update channel is configured for this build."
+        }
+    }
+}
 
 @MainActor
 final class UpdateChecker: ObservableObject {
@@ -13,25 +111,53 @@ final class UpdateChecker: ObservableObject {
 
     @Published private(set) var state: State = .idle
 
+    private let loader: any UpdateFeedLoading
+    private let feedURL: URL?
+    let currentVersion: String
+
+    convenience init() {
+        self.init(
+            loader: GitHubUpdateFeedLoader(),
+            feedURL: Self.configuredFeedURL,
+            currentVersion: Bundle.main.object(
+                forInfoDictionaryKey: "CFBundleShortVersionString"
+            ) as? String ?? "0.0.0"
+        )
+    }
+
+    init(
+        loader: any UpdateFeedLoading,
+        feedURL: URL?,
+        currentVersion: String
+    ) {
+        self.loader = loader
+        self.feedURL = feedURL
+        self.currentVersion = currentVersion
+    }
+
     func check() {
         guard state != .checking else { return }
+        guard let feedURL else {
+            state = .failed(UpdateFeedError.unavailable.localizedDescription)
+            return
+        }
+        guard let installedVersion = CopyClipVersion(currentVersion) else {
+            state = .failed("The installed app version is invalid.")
+            return
+        }
+
         state = .checking
         Task {
             do {
-                var request = URLRequest(
-                    url: URL(string: "https://api.github.com/repos/38st/CopyClipLite/releases/latest")!
+                let release = try await loader.latestRelease(
+                    from: feedURL,
+                    userAgent: "CopyClipLite/\(currentVersion)"
                 )
-                request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-                request.setValue("CopyClipLite/\(currentVersion)", forHTTPHeaderField: "User-Agent")
-                let (data, response) = try await URLSession.shared.data(for: request)
-                guard let httpResponse = response as? HTTPURLResponse,
-                      (200..<300).contains(httpResponse.statusCode) else {
-                    throw UpdateError.invalidResponse
+                guard let latestVersion = CopyClipVersion(release.version) else {
+                    throw UpdateFeedError.invalidVersion
                 }
-                let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
-                let latestVersion = release.tagName.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
-                if Self.compareVersions(latestVersion, currentVersion) == .orderedDescending {
-                    state = .updateAvailable(version: latestVersion, url: release.htmlURL)
+                if latestVersion > installedVersion {
+                    state = .updateAvailable(version: release.version, url: release.url)
                 } else {
                     state = .upToDate
                 }
@@ -46,29 +172,10 @@ final class UpdateChecker: ObservableObject {
         NSWorkspace.shared.open(url)
     }
 
-    var currentVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
-    }
-
-    private static func compareVersions(_ lhs: String, _ rhs: String) -> ComparisonResult {
-        lhs.compare(rhs, options: .numeric)
-    }
-
-    private struct GitHubRelease: Decodable {
-        let tagName: String
-        let htmlURL: URL
-
-        enum CodingKeys: String, CodingKey {
-            case tagName = "tag_name"
-            case htmlURL = "html_url"
-        }
-    }
-
-    private enum UpdateError: LocalizedError {
-        case invalidResponse
-
-        var errorDescription: String? {
-            "GitHub did not return a valid release. Try again later."
-        }
+    private static var configuredFeedURL: URL? {
+        let configured = Bundle.main.object(
+            forInfoDictionaryKey: "CopyClipUpdateFeedURL"
+        ) as? String
+        return configured.flatMap(URL.init(string:))
     }
 }

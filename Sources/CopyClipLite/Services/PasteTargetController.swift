@@ -202,7 +202,7 @@ final class PasteTargetController: ObservableObject {
         ) { [weak self] notification in
             guard let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
                     as? NSRunningApplication else { return }
-            Task { @MainActor [weak self] in
+            MainActor.assumeIsolated {
                 self?.handleActivation(application)
             }
         }

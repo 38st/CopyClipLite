@@ -997,7 +997,7 @@ final class ClipboardStore: ObservableObject {
         ) { [weak self] notification in
             guard let runningApplication = notification.userInfo?[NSWorkspace.applicationUserInfoKey]
                     as? NSRunningApplication else { return }
-            Task { @MainActor [weak self] in
+            MainActor.assumeIsolated {
                 guard let self else { return }
                 let previousApplication = self.lastActiveApplication
                 self.pollPasteboardForChanges(sourceApplicationOverride: previousApplication)

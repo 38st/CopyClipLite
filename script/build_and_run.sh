@@ -2,12 +2,22 @@
 set -euo pipefail
 
 MODE="${1:-run}"
+case "$MODE" in
+  package|--package|run|--debug|debug|--logs|logs|--telemetry|telemetry|--verify|verify)
+    ;;
+  *)
+    echo "usage: $0 [package|run|--debug|--logs|--telemetry|--verify]" >&2
+    exit 2
+    ;;
+esac
+
 APP_NAME="CopyClipLite"
 APP_DISPLAY_NAME="${COPYCLIP_APP_DISPLAY_NAME:-CopyClip Lite}"
 BUNDLE_ID="${COPYCLIP_BUNDLE_ID:-io.github.38st.CopyClipLite}"
 GIT_VERSION="$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" describe --tags --match 'v[0-9]*' --abbrev=0 2>/dev/null | sed 's/^v//' || true)"
 APP_VERSION="${COPYCLIP_VERSION:-${GIT_VERSION:-1.0.0}}"
 APP_BUILD_NUMBER="${COPYCLIP_BUILD_NUMBER:-$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" rev-list --count HEAD)}"
+UPDATE_FEED_URL="${COPYCLIP_UPDATE_FEED_URL:-}"
 MIN_SYSTEM_VERSION="14.0"
 CODESIGN_IDENTITY="${COPYCLIP_CODESIGN_IDENTITY:--}"
 
@@ -25,7 +35,7 @@ if [[ ! "$BUNDLE_ID" =~ ^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$ ]]; then
   echo "Invalid bundle identifier: $BUNDLE_ID" >&2
   exit 3
 fi
-if [[ ! "$APP_VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
+if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "Invalid app version: $APP_VERSION" >&2
   exit 3
 fi
@@ -48,8 +58,6 @@ if [[ "$CONFIGURATION" == "release" ]]; then
     SWIFT_BUILD_ARGS+=(--arch "$arch")
   done
 fi
-
-pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 
 swift build "${SWIFT_BUILD_ARGS[@]}"
 BUILD_BINARY="$(swift build "${SWIFT_BUILD_ARGS[@]}" --show-bin-path)/$APP_NAME"
@@ -94,6 +102,10 @@ cat >"$INFO_PLIST" <<PLIST
 </plist>
 PLIST
 
+if [[ -n "$UPDATE_FEED_URL" ]]; then
+  /usr/libexec/PlistBuddy -c "Add :CopyClipUpdateFeedURL string $UPDATE_FEED_URL" "$INFO_PLIST"
+fi
+
 CODESIGN_ARGS=(--force --sign "$CODESIGN_IDENTITY")
 if [[ "$CODESIGN_IDENTITY" != "-" ]]; then
   CODESIGN_ARGS+=(--options runtime --timestamp)
@@ -101,6 +113,10 @@ fi
 
 codesign "${CODESIGN_ARGS[@]}" "$APP_BUNDLE" >/dev/null
 codesign --verify --deep --strict "$APP_BUNDLE"
+
+stop_running_copy() {
+  pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+}
 
 open_app() {
   /usr/bin/open -n "$APP_BUNDLE"
@@ -110,26 +126,27 @@ case "$MODE" in
   package|--package)
     ;;
   run)
+    stop_running_copy
     open_app
     ;;
   --debug|debug)
+    stop_running_copy
     lldb -- "$APP_BINARY"
     ;;
   --logs|logs)
+    stop_running_copy
     open_app
     /usr/bin/log stream --info --style compact --predicate "process == \"$APP_NAME\""
     ;;
   --telemetry|telemetry)
+    stop_running_copy
     open_app
     /usr/bin/log stream --info --style compact --predicate "subsystem == \"$BUNDLE_ID\""
     ;;
   --verify|verify)
+    stop_running_copy
     open_app
     sleep 1
     pgrep -x "$APP_NAME" >/dev/null
-    ;;
-  *)
-    echo "usage: $0 [package|run|--debug|--logs|--telemetry|--verify]" >&2
-    exit 2
     ;;
 esac

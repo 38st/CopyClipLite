@@ -12,6 +12,15 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag and scripts
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          echo "COPYCLIP_RELEASE_VERSION=$VERSION" >> "$GITHUB_ENV"
+          bash -n script/*.sh
 
       - name: Import Developer ID certificate
         env:
@@ -52,9 +61,21 @@ jobs:
           COPYCLIP_RELEASE_MODE=distribution \
           COPYCLIP_CODESIGN_IDENTITY="$IDENTITY" \
           COPYCLIP_NOTARY_PROFILE=CopyClipLiteNotary \
+          COPYCLIP_VERSION="$COPYCLIP_RELEASE_VERSION" \
+          COPYCLIP_EXPECTED_VERSION="$COPYCLIP_RELEASE_VERSION" \
+          COPYCLIP_BUILD_NUMBER="${{ github.run_number }}" \
+          COPYCLIP_UPDATE_FEED_URL="https://api.github.com/repos/38st/CopyClipLite/releases/latest" \
           ./script/package_release.sh
+
+      - name: Record verified artifact checksum
+        run: shasum -a 256 dist/CopyClip-Lite-macOS.zip | tee dist/CopyClip-Lite-macOS.zip.sha256
 
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/CopyClip-Lite-macOS.zip --generate-notes --verify-tag
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/CopyClip-Lite-macOS.zip \
+            dist/CopyClip-Lite-macOS.zip.sha256 \
+            --generate-notes \
+            --verify-tag

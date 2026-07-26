@@ -13,9 +13,7 @@ let package = Package(
         .executableTarget(
             name: "CopyClipLite",
             path: "Sources/CopyClipLite",
-            resources: [
-                .process("Resources")
-            ]
+            exclude: ["Resources"]
         ),
         .testTarget(
             name: "CopyClipLiteTests",

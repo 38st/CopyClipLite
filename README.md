@@ -95,4 +95,6 @@ COPYCLIP_NOTARY_PROFILE="CopyClipLiteNotary" \
 
 Tagged releases (`vX.Y.Z`) run the same test/sign/notarize/staple flow through `.github/workflows/release.yml`. Configure the repository secrets documented in that workflow before publishing the first tag. CI validates tests, the package, and both `arm64` and `x86_64` slices on every pull request.
 
+Public distribution also requires a public release repository/feed. Local builds intentionally omit the update feed and report that no public channel is configured; the tagged-release workflow embeds the GitHub Releases endpoint only in the notarized distribution build.
+
 The production bundle identifier is `io.github.38st.CopyClipLite`. On first launch after upgrading from the former local bundle identifier, CopyClip Lite migrates existing preferences; clipboard history remains in the same Application Support directory.

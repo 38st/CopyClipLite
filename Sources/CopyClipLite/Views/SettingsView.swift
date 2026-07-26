@@ -409,32 +409,51 @@ struct SettingsView: View {
         transferMessage = nil
         transferError = nil
         let sourceFileName = provider.suggestedName ?? "Dropped history.json"
+        let transferErrorBinding = $transferError
+        let transferMessageBinding = $transferMessage
+        let transferTaskBinding = $transferTask
+        let pendingImportArtifactBinding = $pendingImportArtifact
+        let isConfirmingImportBinding = $isConfirmingImport
+        let clipboardStore = store
         provider.loadDataRepresentation(
             forTypeIdentifier: UTType.json.identifier
         ) { data, error in
-            Task { @MainActor in
-                if let error {
-                    transferError = error.localizedDescription
+            let loadErrorDescription = error?.localizedDescription
+            Task { @MainActor [
+                data,
+                loadErrorDescription,
+                sourceFileName,
+                transferErrorBinding,
+                transferMessageBinding,
+                transferTaskBinding,
+                pendingImportArtifactBinding,
+                isConfirmingImportBinding,
+                clipboardStore
+            ] in
+                if let loadErrorDescription {
+                    transferErrorBinding.wrappedValue = loadErrorDescription
                     return
                 }
                 guard let data else {
-                    transferError = "The dropped history could not be read."
+                    transferErrorBinding.wrappedValue = "The dropped history could not be read."
                     return
                 }
-                transferTask = Task {
-                    defer { transferTask = nil }
+                transferTaskBinding.wrappedValue = Task { @MainActor in
+                    defer { transferTaskBinding.wrappedValue = nil }
                     do {
-                        pendingImportArtifact = try await store.prepareImport(
+                        pendingImportArtifactBinding.wrappedValue = try await clipboardStore.prepareImport(
                             data: data,
                             sourceFileName: sourceFileName
                         )
-                        isConfirmingImport = true
+                        isConfirmingImportBinding.wrappedValue = true
                     } catch is CancellationError {
-                        clearPendingImport()
-                        transferMessage = "Import cancelled."
+                        pendingImportArtifactBinding.wrappedValue = nil
+                        isConfirmingImportBinding.wrappedValue = false
+                        transferMessageBinding.wrappedValue = "Import cancelled."
                     } catch {
-                        clearPendingImport()
-                        transferError = error.localizedDescription
+                        pendingImportArtifactBinding.wrappedValue = nil
+                        isConfirmingImportBinding.wrappedValue = false
+                        transferErrorBinding.wrappedValue = error.localizedDescription
                     }
                 }
             }

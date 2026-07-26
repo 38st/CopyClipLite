@@ -518,7 +518,7 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertTrue(pasteboard.setData(imageData, forType: .png))
         XCTAssertTrue(pasteboard.setString("newest caption", forType: .string))
         store.pollPasteboardForChanges()
-        try await Task.sleep(nanoseconds: 250_000_000)
+        try await waitForCopyCount(2, in: store)
 
         XCTAssertEqual(store.items.count, 1)
         XCTAssertEqual(store.items.first?.copyCount, 2)

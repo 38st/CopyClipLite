@@ -8,11 +8,10 @@ Excluded throughout: security and vulnerability auditing
 
 All repository implementation work in the 37-task backlog is complete. Two multi-agent completion passes found and closed remaining gaps in import serialization, exact cleanup/relaunch image copyability, fault-boundary coverage, image-type validation, bounded capture scheduling, live-image memory bounds, transfer limits/responsiveness, malformed current envelopes, warning ownership, Direct Paste clocks/observation, hotkey safety/layouts, real event routing, lifecycle behavior, release artifact verification, installer replacement, drag-out file representations, resource loading, and honest production-source coverage reporting.
 
-Three release/integration gates require owner-controlled or human action rather than more repository code:
+Two manual integration gates require human action rather than more repository code:
 
-1. `38st/CopyClipLite` is still private. It must be made public, or the tagged release build must use another public release feed, before TASK-005 can be operational for end users.
-2. TASK-033/TASK-037 include a manual VoiceOver and Reduce Motion release matrix. The implementation, automated event/order/lifecycle checks, and a live packaged-app AX-tree inspection are complete; spoken VoiceOver and physical Reduce Motion QA remain in `ACCESSIBILITY_TEST_MATRIX.md`.
-3. TASK-035’s text, PNG, promised-file, and Finder-style file-URL provider contracts are automated, but actual gestures into representative macOS apps and Finder remain a manual interoperability check.
+1. TASK-033/TASK-037 include a manual VoiceOver and Reduce Motion release matrix. The implementation, automated event/order/lifecycle checks, and a live packaged-app AX-tree inspection are complete; spoken VoiceOver and physical Reduce Motion QA remain in `ACCESSIBILITY_TEST_MATRIX.md`.
+2. TASK-035’s text, PNG, promised-file, and Finder-style file-URL provider contracts are automated, but actual gestures into representative macOS apps and Finder remain a manual interoperability check.
 
 Apple Developer signing and notarization are outside the selected scope. Tagged releases are ad-hoc signed, require no Apple secrets, verify the exact uploaded ZIP, and disclose the expected Gatekeeper confirmation step.
 
@@ -24,7 +23,7 @@ Apple Developer signing and notarization are outside the selected scope. Tagged 
 | 002 | Complete | Persistence generations serialize import and prevent stale snapshots from overwriting it |
 | 003 | Complete | Content-addressed sidecars and an explicitly staged atomic manifest preserve the previous generation at every injected pre/post-sidecar and manifest-staging failure |
 | 004 | Complete | Static and live quit paths share one pinned-only projection independently of manual-clear preferences |
-| 005 | Code complete; publication gate | Configurable/injected updater, public-feed-only distribution config, restored CI path; repository visibility/release remain owner actions |
+| 005 | Complete | Public MIT repository, green CI, anonymous latest-release metadata and asset downloads, and a verified `v1.0.0` update feed |
 | 006 | Complete | Expired timed pauses resume at launch; manual pause remains paused |
 | 007 | Complete | Text and image identity are separated throughout deduplication |
 | 008 | Complete | ImageIO fully decodes, type-checks, orients, validates, and canonicalizes every supported image to PNG with a required thumbnail |
@@ -37,7 +36,7 @@ Apple Developer signing and notarization are outside the selected scope. Tagged 
 | 015 | Complete | Persisted configs, handler lifecycle, recording suspension, ownership, and injected non-US keyboard-layout labels are hardened |
 | 016 | Complete | The live coordinator’s tested `NSEvent`/`NSTextView` route and pinned-first order drive editing-safe navigation, selection, copy, pin, and delete |
 | 017 | Complete | Direct Paste has explicit attempt state, copied/not-copied semantics, target preservation, generation cancellation, injected monotonic sleep/activation observation, permission recheck, and UI restoration |
-| 018 | Code and local artifact complete; tag publication gate | One X.Y.Z contract, full-history monotonic build, exact tag/plist assertion, reproducible final ZIP, draft-upload download/SHA verification, explicit ad-hoc signature verification, and Gatekeeper disclosure |
+| 018 | Complete | Published `v1.0.0` uses the X.Y.Z/tag contract, monotonic CI build, reproducible final ZIP, draft-upload download/SHA verification, explicit ad-hoc signature verification, and Gatekeeper disclosure |
 | 019 | Complete | Failed image processing records the captured text/RTF/HTML snapshot once |
 | 020 | Complete | Plain/rich limits are aligned and visible; oversized optional rich formats degrade with an exact warning |
 | 021 | Complete | Out-of-order duplicate images use latest representation semantics and legacy raw PNG hashes migrate to the canonical hash |
@@ -75,3 +74,6 @@ Apple Developer signing and notarization are outside the selected scope. Tagged 
 - Drag-provider regressions load valid RTF/HTML payloads and verify that image providers advertise a decodable Finder-style file URL whose PNG bytes exactly match the stored image without mutating history.
 - Dropped-JSON regressions verify validated preview-plan identity, provider failure behavior, user-visible cancellation, and rejection of late callbacks without mutating history.
 - Local Gatekeeper rejection is expected for the selected ad-hoc release scope and is disclosed in tagged release notes; Apple Developer signing and notarization are not completion gates.
+- The MIT-licensed repository is public at `https://github.com/38st/CopyClipLite`; anonymous repository and API requests return HTTP 200 and identify `main` plus SPDX license `MIT`.
+- The public `v1.0.0` workflow passed tests, release-contract validation, universal packaging, fresh-ZIP verification, draft upload, downloaded-asset SHA verification, and publication.
+- Anonymous `releases/latest`, ZIP, and checksum downloads succeeded. The downloaded ZIP SHA-256 is `cb76503d9233c943229a5e631ca6aad777578fa7bd674fd1ff36ef398daf7689`; it contains version `1.0.0`, the public releases feed, a valid ad-hoc signature, and `x86_64` plus `arm64`.

@@ -5,7 +5,7 @@ Audited commit: `db0a3d3de6f72b6e721d9025710bc6271efd3a65` (`main`)
 Scope: product behavior, functional correctness, reliability, data integrity, UX, performance, test coverage, packaging, and release readiness
 Explicit exclusion: security and vulnerability auditing
 
-Implementation follow-up: see `COPYCLIP_LITE_IMPLEMENTATION_REPORT.md` for the completed remediation status, verification evidence, and the remaining publication/manual-integration gates. Apple Developer signing and notarization are explicitly outside the selected release scope.
+Implementation follow-up: see `COPYCLIP_LITE_IMPLEMENTATION_REPORT.md` for the completed remediation status, public `v1.0.0` evidence, and the remaining manual-integration gates. Apple Developer signing and notarization are explicitly outside the selected release scope.
 
 ## Executive conclusion
 

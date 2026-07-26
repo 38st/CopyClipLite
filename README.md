@@ -5,7 +5,7 @@ CopyClip Lite is a lightweight native macOS clipboard history utility. It runs f
 ## Features
 
 - Menu bar panel with searchable clipboard history
-- Text and image clipboard capture with image thumbnails and lightweight on-disk image files
+- Plain text plus RTF/HTML text capture; PNG, TIFF, JPEG, HEIC/HEIF, and Finder-copied local image capture through one normalized PNG pipeline
 - One-click copy back to the pasteboard
 - Keyboard navigation with arrow keys and Return to copy the selected clip
 - Global Option-Command-V hotkey to open clipboard search
@@ -16,8 +16,8 @@ CopyClip Lite is a lightweight native macOS clipboard history utility. It runs f
 - Pinned clips are preserved until manually deleted or cleared
 - Optional clear of unpinned history when quitting
 - App ignore list for skipping future clips from selected apps
-- History export and import
-- Validated import preview with merge/replace choices and automatic pre-import backups
+- Versioned, same-version-compatible JSON history export and import
+- Strategy-aware validated import preview with merge/replace projections and automatic pre-import backups
 - Launch at Login setting for menu-bar startup
 - Native macOS app bundle with Finder, Spotlight, Launchpad, and menu-bar access
 - First-run welcome window
@@ -45,6 +45,8 @@ Image files are stored locally under:
 By default, CopyClip Lite keeps up to 50 unpinned clips and auto-clears unpinned clips after 7 days. Pinned clips never auto-clear.
 
 Text clips over 20,000 characters, encoded images over 10 MB, and images over 100 megapixels are skipped with an in-app warning so unexpectedly large clipboard data cannot freeze the interface or exhaust storage.
+
+Rich text is retained only when a plain-text representation can be extracted, and each optional RTF/HTML representation is capped at 10 MB. Image copy-back requires PNG; macOS may synthesize additional representations for destination compatibility without CopyClip eagerly decoding a TIFF on the main thread.
 
 ## Requirements
 

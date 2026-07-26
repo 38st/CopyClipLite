@@ -5,6 +5,24 @@ enum ClipboardPanelOrdering {
     static func displayedItems(_ visibleItems: [ClipboardItem]) -> [ClipboardItem] {
         visibleItems.filter(\.isPinned) + visibleItems.filter { !$0.isPinned }
     }
+
+    static func selectionAfterDeleting(
+        deletedID: ClipboardItem.ID,
+        selectedID: ClipboardItem.ID?,
+        before: [ClipboardItem],
+        after: [ClipboardItem]
+    ) -> ClipboardItem.ID? {
+        guard selectedID == deletedID,
+              let deletedIndex = before.firstIndex(where: { $0.id == deletedID }) else {
+            return selectedID.flatMap { selected in
+                after.contains(where: { $0.id == selected }) ? selected : after.first?.id
+            }
+        }
+        guard !after.isEmpty else {
+            return nil
+        }
+        return after[min(deletedIndex, after.count - 1)].id
+    }
 }
 
 struct ClipboardPanelView: View {
@@ -31,8 +49,8 @@ struct ClipboardPanelView: View {
             VStack(spacing: 8) {
                 searchField
                 filterPicker
-                if let issueMessage {
-                    IssueBanner(message: issueMessage, dismiss: dismissIssue)
+                if let displayedIssue {
+                    IssueBanner(message: displayedIssue.message, dismiss: dismissIssue)
                 }
             }
                 .padding(.horizontal, 14)
@@ -217,13 +235,12 @@ struct ClipboardPanelView: View {
                 }
                 .onChange(of: selectedItemID) { _, newID in
                     if let newID {
-                        if reduceMotion {
-                            proxy.scrollTo(newID, anchor: .center)
-                        } else {
-                            withAnimation {
-                                proxy.scrollTo(newID, anchor: .center)
-                            }
-                        }
+                        scroll(to: newID, using: proxy)
+                    }
+                }
+                .onChange(of: ClipboardPanelOrdering.displayedItems(visible).map(\.id)) { _, _ in
+                    if let selectedItemID {
+                        scroll(to: selectedItemID, using: proxy)
                     }
                 }
             }
@@ -236,7 +253,7 @@ struct ClipboardPanelView: View {
             rowID: item.id,
             isCopied: store.lastCopiedID == item.id,
             isSelected: selectedItemID == item.id,
-            thumbnailData: item.image?.displayData ?? store.thumbnailData(for: item),
+            thumbnailData: store.cachedThumbnailData(for: item),
             activate: {
                 selectedItemID = item.id
                 if store.directPasteEnabled {
@@ -254,9 +271,7 @@ struct ClipboardPanelView: View {
                 store.togglePin(item)
             },
             delete: {
-                store.delete(item)
-                selectedItemID = nil
-                reconcileSelection()
+                deleteItem(item)
             },
             ignoreApplication: ignoreApplicationAction(for: item),
             transform: item.contentKind == .text ? { transformation in
@@ -434,10 +449,20 @@ struct ClipboardPanelView: View {
             return false
         }
 
-        store.delete(item)
-        selectedItemID = nil
-        reconcileSelection()
+        deleteItem(item)
         return true
+    }
+
+    private func deleteItem(_ item: ClipboardItem) {
+        let before = displayedItems()
+        store.delete(item)
+        let after = displayedItems()
+        selectedItemID = ClipboardPanelOrdering.selectionAfterDeleting(
+            deletedID: item.id,
+            selectedID: selectedItemID,
+            before: before,
+            after: after
+        )
     }
 
     private func togglePinSelectedItem() -> Bool {
@@ -480,14 +505,56 @@ struct ClipboardPanelView: View {
         }
     }
 
-    private var issueMessage: String? {
-        pasteTargetController.lastError ?? store.storageErrorMessage ?? store.captureWarning
+    private func scroll(
+        to id: ClipboardItem.ID,
+        using proxy: ScrollViewProxy
+    ) {
+        if reduceMotion {
+            proxy.scrollTo(id, anchor: .center)
+        } else {
+            withAnimation {
+                proxy.scrollTo(id, anchor: .center)
+            }
+        }
+    }
+
+    private enum DisplayedIssue {
+        case paste(String)
+        case storage(String)
+        case capture(String)
+
+        var message: String {
+            switch self {
+            case let .paste(message), let .storage(message), let .capture(message):
+                message
+            }
+        }
+    }
+
+    private var displayedIssue: DisplayedIssue? {
+        if let message = pasteTargetController.lastError {
+            return .paste(message)
+        }
+        if let message = store.storageErrorMessage {
+            return .storage(message)
+        }
+        if let message = store.captureWarning {
+            return .capture(message)
+        }
+        return nil
     }
 
     private func dismissIssue() {
-        pasteTargetController.dismissError()
-        store.dismissStorageError()
-        store.dismissCaptureWarning()
+        switch displayedIssue {
+        case .paste:
+            pasteTargetController.dismissError()
+        case .storage:
+            store.dismissStorageError()
+        case .capture:
+            store.dismissCaptureWarning()
+        case nil:
+            break
+        }
     }
 }
 

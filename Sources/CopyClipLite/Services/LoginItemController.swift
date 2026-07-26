@@ -1,13 +1,55 @@
 import Foundation
 import ServiceManagement
 
+enum LoginItemStatus: Sendable, Equatable {
+    case enabled
+    case notRegistered
+    case requiresApproval
+    case notFound
+    case unknown
+}
+
+protocol LoginItemServicing: Sendable {
+    var status: LoginItemStatus { get }
+    func register() throws
+    func unregister() throws
+    func openSettings()
+}
+
+struct SystemLoginItemService: LoginItemServicing {
+    var status: LoginItemStatus {
+        switch SMAppService.mainApp.status {
+        case .enabled: .enabled
+        case .notRegistered: .notRegistered
+        case .requiresApproval: .requiresApproval
+        case .notFound: .notFound
+        @unknown default: .unknown
+        }
+    }
+
+    func register() throws {
+        try SMAppService.mainApp.register()
+    }
+
+    func unregister() throws {
+        try SMAppService.mainApp.unregister()
+    }
+
+    func openSettings() {
+        SMAppService.openSystemSettingsLoginItems()
+    }
+}
+
 @MainActor
 final class LoginItemController: ObservableObject {
-    @Published private(set) var status: SMAppService.Status
+    @Published private(set) var status: LoginItemStatus
     @Published private(set) var errorMessage: String?
 
-    init() {
-        self.status = SMAppService.mainApp.status
+    private let service: any LoginItemServicing
+
+    init(service: any LoginItemServicing = SystemLoginItemService()) {
+        self.service = service
+        self.status = service.status
     }
 
     var isEnabled: Bool {
@@ -28,28 +70,28 @@ final class LoginItemController: ObservableObject {
             "Needs approval"
         case .notFound:
             "Unavailable"
-        @unknown default:
+        case .unknown:
             "Unknown"
         }
     }
 
     func refresh() {
-        status = SMAppService.mainApp.status
+        status = service.status
     }
 
     func setEnabled(_ shouldEnable: Bool) {
-        if status == .requiresApproval {
-            if shouldEnable {
-                SMAppService.openSystemSettingsLoginItems()
-            }
-            return
-        }
-
         do {
-            if shouldEnable && status != .enabled {
-                try SMAppService.mainApp.register()
-            } else if !shouldEnable && status != .notRegistered {
-                try SMAppService.mainApp.unregister()
+            if shouldEnable {
+                switch status {
+                case .enabled:
+                    break
+                case .requiresApproval:
+                    service.openSettings()
+                case .notRegistered, .notFound, .unknown:
+                    try service.register()
+                }
+            } else if status != .notRegistered {
+                try service.unregister()
             }
 
             errorMessage = nil
@@ -61,6 +103,6 @@ final class LoginItemController: ObservableObject {
     }
 
     func openLoginItemsSettings() {
-        SMAppService.openSystemSettingsLoginItems()
+        service.openSettings()
     }
 }

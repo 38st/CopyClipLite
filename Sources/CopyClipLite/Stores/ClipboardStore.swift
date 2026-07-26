@@ -2,7 +2,7 @@ import AppKit
 import Combine
 import Foundation
 
-enum ClipboardImportStrategy {
+enum ClipboardImportStrategy: Sendable, Equatable {
     case merge
     case replace
 }
@@ -39,6 +39,7 @@ final class ClipboardStore: ObservableObject {
     }
 
     private static let maximumCapturedCharacters = 20_000
+    private static let maximumCapturedRichTextBytes = 10 * 1024 * 1024
     private static let defaultHistoryLimit = 50
     private static let pollInterval: TimeInterval = 0.5
     private static let pruneInterval: TimeInterval = 15 * 60
@@ -90,6 +91,9 @@ final class ClipboardStore: ObservableObject {
     @Published private(set) var lastCopiedID: ClipboardItem.ID?
     @Published private(set) var storageErrorMessage: String?
     @Published private(set) var captureWarning: String?
+    @Published private(set) var isTransferBusy = false
+    @Published private(set) var transferProgressText: String?
+    @Published private var thumbnailCache: [ClipboardItem.ID: Data] = [:]
 
     private let pasteboard: NSPasteboard
     private let storage: ClipboardStorage
@@ -110,6 +114,10 @@ final class ClipboardStore: ObservableObject {
     private let persistenceQueue = DispatchQueue(label: "CopyClipLite.persistence", qos: .utility)
     private let persistenceGeneration = PersistenceGeneration()
     private let imageProcessor: any ClipboardImageProcessing
+    private let pasteboardWriter: any ClipboardPasteboardWriting
+    private let transferService: ClipboardTransferService
+    private var thumbnailLoadIDs: Set<ClipboardItem.ID> = []
+    private var thumbnailCacheOrder: [ClipboardItem.ID] = []
 
     var storageLocation: URL {
         storage.fileURL
@@ -117,6 +125,40 @@ final class ClipboardStore: ObservableObject {
 
     func thumbnailData(for item: ClipboardItem) -> Data? {
         storage.thumbnailData(for: item)
+    }
+
+    func cachedThumbnailData(for item: ClipboardItem) -> Data? {
+        if let inlineData = item.image?.displayData {
+            return inlineData
+        }
+        if let cachedData = thumbnailCache[item.id] {
+            return cachedData
+        }
+        guard !thumbnailLoadIDs.contains(item.id) else {
+            return nil
+        }
+
+        thumbnailLoadIDs.insert(item.id)
+        let storage = storage
+        Task { @MainActor [weak self] in
+            let data = await Task.detached(priority: .utility) {
+                storage.thumbnailData(for: item)
+            }.value
+            guard let self else { return }
+            self.thumbnailLoadIDs.remove(item.id)
+            guard let data,
+                  self.items.contains(where: { $0.id == item.id }) else {
+                return
+            }
+            self.thumbnailCache[item.id] = data
+            self.thumbnailCacheOrder.removeAll { $0 == item.id }
+            self.thumbnailCacheOrder.append(item.id)
+            while self.thumbnailCacheOrder.count > 100 {
+                let evictedID = self.thumbnailCacheOrder.removeFirst()
+                self.thumbnailCache.removeValue(forKey: evictedID)
+            }
+        }
+        return nil
     }
 
     var historySummaryText: String {
@@ -148,13 +190,18 @@ final class ClipboardStore: ObservableObject {
         storage: ClipboardStorage = ClipboardStorage(),
         defaults: UserDefaults = .standard,
         sourceApplicationProvider: (() -> ClipboardSourceApplication?)? = nil,
-        imageProcessor: any ClipboardImageProcessing = ClipboardImageProcessingService()
+        imageProcessor: any ClipboardImageProcessing = ClipboardImageProcessingService(),
+        pasteboardWriter: (any ClipboardPasteboardWriting)? = nil
     ) {
         let loadResult = storage.loadResult()
         self.pasteboard = pasteboard
         self.storage = storage
         self.defaults = defaults
         self.imageProcessor = imageProcessor
+        self.pasteboardWriter = pasteboardWriter ?? SystemClipboardPasteboardWriter(
+            pasteboard: pasteboard
+        )
+        self.transferService = ClipboardTransferService(storage: storage)
         self.sourceApplicationProvider = sourceApplicationProvider ?? ClipboardSourceApplication.frontmost
         self.usesWorkspaceSourceTracking = sourceApplicationProvider == nil
         self.lastActiveApplication = sourceApplicationProvider == nil
@@ -169,8 +216,13 @@ final class ClipboardStore: ObservableObject {
             self.storageErrorMessage = error.localizedDescription
         }
         self.captureWarning = nil
-        self.historyLimit = defaults.object(forKey: DefaultsKey.historyLimit) as? Int
+        let storedHistoryLimit = defaults.object(forKey: DefaultsKey.historyLimit) as? Int
             ?? Self.defaultHistoryLimit
+        let normalizedHistoryLimit = min(max(storedHistoryLimit, 10), 200)
+        self.historyLimit = normalizedHistoryLimit
+        if storedHistoryLimit != normalizedHistoryLimit {
+            defaults.set(normalizedHistoryLimit, forKey: DefaultsKey.historyLimit)
+        }
         self.retentionPolicy = defaults.string(forKey: DefaultsKey.retentionPolicy)
             .flatMap(ClipboardRetentionPolicy.init(rawValue:))
             ?? .sevenDays
@@ -293,8 +345,111 @@ final class ClipboardStore: ObservableObject {
         try storage.export(items, to: url)
     }
 
+    func exportHistoryAsync(to url: URL) async throws {
+        guard !isTransferBusy else {
+            throw ClipboardStorageError.persistenceFailed
+        }
+        isTransferBusy = true
+        transferProgressText = "Preparing export…"
+        defer {
+            isTransferBusy = false
+            transferProgressText = nil
+        }
+        let snapshot = items
+        try await transferService.export(snapshot, to: url)
+    }
+
     func importPreview(from url: URL) throws -> ClipboardImportPreview {
         try storage.importPreview(from: url)
+    }
+
+    func prepareImport(from url: URL) async throws -> ClipboardImportArtifact {
+        guard !isTransferBusy else {
+            throw ClipboardStorageError.persistenceFailed
+        }
+        isTransferBusy = true
+        transferProgressText = "Validating import…"
+        defer {
+            isTransferBusy = false
+            transferProgressText = nil
+        }
+        return try await transferService.prepareImport(from: url)
+    }
+
+    func importProjection(
+        for artifact: ClipboardImportArtifact,
+        strategy: ClipboardImportStrategy,
+        now: Date = Date()
+    ) -> ClipboardImportProjection {
+        let beforePruning: [ClipboardItem]
+        let addedCount: Int
+        let deduplicatedCount: Int
+
+        switch strategy {
+        case .merge:
+            beforePruning = mergedItems(existing: items, imported: artifact.items)
+            addedCount = max(beforePruning.count - items.count, 0)
+            deduplicatedCount = max(artifact.items.count - addedCount, 0)
+        case .replace:
+            beforePruning = artifact.items.sorted { $0.lastCopiedAt > $1.lastCopiedAt }
+            addedCount = artifact.items.count
+            deduplicatedCount = 0
+        }
+
+        let afterExpiration = itemsAfterExpiration(beforePruning, now: now)
+        let finalItems = itemsAfterLimit(afterExpiration)
+        return ClipboardImportProjection(
+            strategy: strategy,
+            sourceItemCount: artifact.items.count,
+            addedCount: addedCount,
+            deduplicatedCount: deduplicatedCount,
+            expiredCount: beforePruning.count - afterExpiration.count,
+            overLimitCount: afterExpiration.count - finalItems.count,
+            retainedPinnedCount: finalItems.filter(\.isPinned).count,
+            finalCount: finalItems.count
+        )
+    }
+
+    @discardableResult
+    func importHistory(
+        artifact: ClipboardImportArtifact,
+        strategy: ClipboardImportStrategy
+    ) async throws -> ClipboardImportCommit {
+        guard !isTransferBusy else {
+            throw ClipboardStorageError.persistenceFailed
+        }
+
+        isTransferBusy = true
+        transferProgressText = "Applying import…"
+        invalidatePendingImageCaptures()
+        invalidatePendingPersist()
+        stopMonitoring()
+        defer {
+            isTransferBusy = false
+            transferProgressText = nil
+            if isMonitoringEnabled {
+                startMonitoring()
+            }
+        }
+
+        let currentItems = items
+        let candidateItems: [ClipboardItem]
+        switch strategy {
+        case .merge:
+            candidateItems = prunedItems(
+                mergedItems(existing: currentItems, imported: artifact.items)
+            )
+        case .replace:
+            candidateItems = prunedItems(artifact.items)
+        }
+
+        let commit = try await transferService.commitImport(
+            currentItems: currentItems,
+            candidateItems: candidateItems
+        )
+        items = commit.items
+        storageErrorMessage = nil
+        return commit
     }
 
     @discardableResult
@@ -342,10 +497,15 @@ final class ClipboardStore: ObservableObject {
             imageData = nil
         }
 
-        guard writeToPasteboard(item, imageData: imageData) else {
+        let writeResult = writeToPasteboard(item, imageData: imageData)
+        guard writeResult.wroteRequiredRepresentations else {
             storageErrorMessage = "The clip could not be written to the system clipboard."
             return false
         }
+        if case let .degraded(optionalTypes) = writeResult {
+            captureWarning = "The clip was copied without optional formats: \(optionalTypes.joined(separator: ", "))."
+        }
+        storageErrorMessage = nil
 
         var updated = items.remove(at: index)
         updated.lastCopiedAt = Date()
@@ -368,8 +528,18 @@ final class ClipboardStore: ObservableObject {
             return
         }
 
-        pasteboard.clearContents()
-        pasteboard.setString(transformedText, forType: .string)
+        let result = pasteboardWriter.write(
+            ClipboardPasteboardWriteRequest(
+                required: [
+                    ClipboardPasteboardRepresentation(.string, value: .string(transformedText))
+                ],
+                optional: []
+            )
+        )
+        guard result.wroteRequiredRepresentations else {
+            storageErrorMessage = "The transformed clip could not be written to the system clipboard."
+            return
+        }
         lastPasteboardChangeCount = pasteboard.changeCount
 
         if let existingIndex = items.firstIndex(where: {
@@ -455,6 +625,9 @@ final class ClipboardStore: ObservableObject {
     }
 
     func pollPasteboardForChanges(sourceApplicationOverride: ClipboardSourceApplication? = nil) {
+        guard !isTransferBusy else {
+            return
+        }
         let currentChangeCount = pasteboard.changeCount
 
         guard currentChangeCount != lastPasteboardChangeCount else {
@@ -473,26 +646,32 @@ final class ClipboardStore: ObservableObject {
             return
         }
 
-        let text = Self.normalizedText(pasteboard.string(forType: .string))
+        let capturedText = Self.capturedText(from: pasteboard)
+        if let warning = capturedText.warning {
+            captureWarning = warning
+        }
 
         if let candidate = Self.imageCandidate(from: pasteboard) {
             let capturedAt = Date()
             processImageCandidate(
                 candidate,
-                associatedText: text,
+                associatedText: capturedText.snapshot,
                 sourceApplication: sourceApplication,
                 capturedAt: capturedAt
             )
             return
         }
 
-        guard let text else {
+        guard let textSnapshot = capturedText.snapshot else {
             return
         }
 
-        let rtfData = pasteboard.data(forType: .rtf)
-        let htmlData = pasteboard.data(forType: .html)
-        record(text, rtfData: rtfData, htmlData: htmlData, sourceApplication: sourceApplication)
+        record(
+            textSnapshot.text,
+            rtfData: textSnapshot.rtfData,
+            htmlData: textSnapshot.htmlData,
+            sourceApplication: sourceApplication
+        )
     }
 
     private func shouldIgnoreCurrentPasteboard() -> Bool {
@@ -505,7 +684,7 @@ final class ClipboardStore: ObservableObject {
 
     private func processImageCandidate(
         _ candidate: ClipboardImageCandidate,
-        associatedText: String?,
+        associatedText: CapturedTextSnapshot?,
         sourceApplication: ClipboardSourceApplication?,
         capturedAt: Date
     ) {
@@ -533,7 +712,7 @@ final class ClipboardStore: ObservableObject {
                 }
                 self.record(
                     image,
-                    associatedText: associatedText,
+                    associatedText: associatedText?.text,
                     sourceApplication: sourceApplication,
                     capturedAt: capturedAt
                 )
@@ -546,6 +725,14 @@ final class ClipboardStore: ObservableObject {
                     return
                 }
                 self.captureWarning = error.localizedDescription
+                if let associatedText {
+                    self.record(
+                        associatedText.text,
+                        rtfData: associatedText.rtfData,
+                        htmlData: associatedText.htmlData,
+                        sourceApplication: sourceApplication
+                    )
+                }
             }
         }
         imageCaptureTasks[requestID] = task
@@ -666,49 +853,106 @@ final class ClipboardStore: ObservableObject {
     }
 
     @discardableResult
-    private func writeToPasteboard(_ item: ClipboardItem, imageData: Data?) -> Bool {
-        pasteboard.clearContents()
-
+    private func writeToPasteboard(
+        _ item: ClipboardItem,
+        imageData: Data?
+    ) -> ClipboardPasteboardWriteResult {
+        let request: ClipboardPasteboardWriteRequest
         switch item.contentKind {
         case .text:
-            guard pasteboard.setString(item.text, forType: .string) else {
-                return false
-            }
+            var optional: [ClipboardPasteboardRepresentation] = []
             if let rtfData = item.rtfData {
-                pasteboard.setData(rtfData, forType: .rtf)
+                optional.append(ClipboardPasteboardRepresentation(.rtf, value: .data(rtfData)))
             }
             if let htmlData = item.htmlData {
-                pasteboard.setData(htmlData, forType: .html)
+                optional.append(ClipboardPasteboardRepresentation(.html, value: .data(htmlData)))
             }
-            return true
+            request = ClipboardPasteboardWriteRequest(
+                required: [
+                    ClipboardPasteboardRepresentation(.string, value: .string(item.text))
+                ],
+                optional: optional
+            )
         case .image:
             guard let imageData else {
-                return false
+                return .failure
             }
-
-            guard pasteboard.setData(imageData, forType: .png) else {
-                return false
-            }
-
-            if let nsImage = NSImage(data: imageData), let tiffData = nsImage.tiffRepresentation {
-                pasteboard.setData(tiffData, forType: .tiff)
-            }
-
+            var optional: [ClipboardPasteboardRepresentation] = []
             if !item.text.isEmpty {
-                pasteboard.setString(item.text, forType: .string)
+                optional.append(
+                    ClipboardPasteboardRepresentation(.string, value: .string(item.text))
+                )
             }
-            return true
+            request = ClipboardPasteboardWriteRequest(
+                required: [
+                    ClipboardPasteboardRepresentation(.png, value: .data(imageData))
+                ],
+                optional: optional
+            )
         }
+        return pasteboardWriter.write(request)
     }
 
-    private static func normalizedText(_ text: String?) -> String? {
-        guard let text,
-              text.count <= maximumCapturedCharacters,
-              text.rangeOfCharacter(from: .whitespacesAndNewlines.inverted) != nil else {
-            return nil
+    private struct CapturedTextSnapshot {
+        let text: String
+        let rtfData: Data?
+        let htmlData: Data?
+    }
+
+    private struct CapturedTextResult {
+        let snapshot: CapturedTextSnapshot?
+        let warning: String?
+    }
+
+    private static func capturedText(from pasteboard: NSPasteboard) -> CapturedTextResult {
+        let rawRTFData = pasteboard.data(forType: .rtf)
+        let rawHTMLData = pasteboard.data(forType: .html)
+        let text = pasteboard.string(forType: .string)
+            ?? attributedPlainText(data: rawRTFData, documentType: .rtf)
+            ?? attributedPlainText(data: rawHTMLData, documentType: .html)
+
+        guard let text else {
+            return CapturedTextResult(snapshot: nil, warning: nil)
+        }
+        guard text.rangeOfCharacter(from: .whitespacesAndNewlines.inverted) != nil else {
+            return CapturedTextResult(snapshot: nil, warning: nil)
+        }
+        guard text.count <= maximumCapturedCharacters else {
+            return CapturedTextResult(
+                snapshot: nil,
+                warning: "A text clip was skipped because it exceeds 20,000 characters."
+            )
         }
 
-        return text
+        let rtfData = rawRTFData.flatMap {
+            $0.count <= maximumCapturedRichTextBytes ? $0 : nil
+        }
+        let htmlData = rawHTMLData.flatMap {
+            $0.count <= maximumCapturedRichTextBytes ? $0 : nil
+        }
+        let droppedFormats = [
+            rawRTFData != nil && rtfData == nil ? "RTF" : nil,
+            rawHTMLData != nil && htmlData == nil ? "HTML" : nil
+        ].compactMap { $0 }
+        let warning = droppedFormats.isEmpty
+            ? nil
+            : "The text was saved without oversized \(droppedFormats.joined(separator: " and ")) formatting."
+        return CapturedTextResult(
+            snapshot: CapturedTextSnapshot(text: text, rtfData: rtfData, htmlData: htmlData),
+            warning: warning
+        )
+    }
+
+    private static func attributedPlainText(
+        data: Data?,
+        documentType: NSAttributedString.DocumentType
+    ) -> String? {
+        guard let data else { return nil }
+        return try? NSAttributedString(
+            data: data,
+            options: [.documentType: documentType],
+            documentAttributes: nil
+        ).string
     }
 
     private static func imageCandidate(from pasteboard: NSPasteboard) -> ClipboardImageCandidate? {
@@ -717,6 +961,27 @@ final class ClipboardStore: ObservableObject {
         }
 
         if let data = pasteboard.data(forType: .tiff) {
+            return ClipboardImageCandidate(data: data, isPNG: false)
+        }
+
+        for type in [
+            NSPasteboard.PasteboardType("public.jpeg"),
+            NSPasteboard.PasteboardType("public.heic"),
+            NSPasteboard.PasteboardType("public.heif")
+        ] {
+            if let data = pasteboard.data(forType: type) {
+                return ClipboardImageCandidate(data: data, isPNG: false)
+            }
+        }
+
+        if let fileURLString = pasteboard.string(forType: .fileURL),
+           let fileURL = URL(string: fileURLString),
+           fileURL.isFileURL,
+           let resourceValues = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
+           resourceValues.isRegularFile == true,
+           resourceValues.fileSize ?? 0 <= ClipboardImageProcessor.maximumInputBytes,
+           let data = try? Data(contentsOf: fileURL, options: [.mappedIfSafe]),
+           ClipboardImageProcessor.isDecodableImage(data) {
             return ClipboardImageCandidate(data: data, isPNG: false)
         }
 
@@ -859,6 +1124,7 @@ final class ClipboardStore: ObservableObject {
                         return
                     }
                     self?.applyPersistedImageReferences(persistedItems)
+                    self?.storageErrorMessage = nil
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -879,6 +1145,7 @@ final class ClipboardStore: ObservableObject {
                 try storage.saveValidated(snapshot)
             }
             applyPersistedImageReferences(persistedItems)
+            storageErrorMessage = nil
             return true
         } catch {
             storageErrorMessage = error.localizedDescription
@@ -954,12 +1221,23 @@ final class ClipboardStore: ObservableObject {
     }
 
     private func prunedItems(_ candidateItems: [ClipboardItem], now: Date = Date()) -> [ClipboardItem] {
+        itemsAfterLimit(itemsAfterExpiration(candidateItems, now: now))
+    }
+
+    private func itemsAfterExpiration(
+        _ candidateItems: [ClipboardItem],
+        now: Date
+    ) -> [ClipboardItem] {
         var result = candidateItems.sorted { $0.lastCopiedAt > $1.lastCopiedAt }
         if let expirationInterval = retentionPolicy.expirationInterval {
             let cutoffDate = now.addingTimeInterval(-expirationInterval)
             result.removeAll { !$0.isPinned && $0.lastCopiedAt < cutoffDate }
         }
+        return result
+    }
 
+    private func itemsAfterLimit(_ candidateItems: [ClipboardItem]) -> [ClipboardItem] {
+        var result = candidateItems
         var unpinnedCount = 0
         result.removeAll { item in
             guard !item.isPinned else { return false }

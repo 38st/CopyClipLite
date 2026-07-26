@@ -10,10 +10,10 @@ struct SettingsView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var transferMessage: String?
     @State private var transferError: String?
-    @State private var pendingImportURL: URL?
-    @State private var pendingImportPreview: ClipboardImportPreview?
+    @State private var pendingImportArtifact: ClipboardImportArtifact?
     @State private var isConfirmingImport = false
     @State private var isConfirmingExport = false
+    @State private var transferTask: Task<Void, Never>?
 
     private var historyLimit: Binding<Int> {
         Binding(get: { store.historyLimit }, set: { store.setHistoryLimit($0) })
@@ -72,7 +72,7 @@ struct SettingsView: View {
             Button("Replace Existing History", role: .destructive) { performImport(strategy: .replace) }
             Button("Cancel", role: .cancel) { clearPendingImport() }
         } message: {
-            Text("A private backup is created before either action. Replace removes the current history after the backup succeeds.")
+            Text(importConfirmationMessage)
         }
     }
 
@@ -260,6 +260,17 @@ struct SettingsView: View {
                     Button("Export…") { isConfirmingExport = true }
                     Button("Import…") { chooseImport() }
                 }
+                .disabled(store.isTransferBusy)
+                if let progress = store.transferProgressText {
+                    HStack {
+                        ProgressView(progress)
+                            .controlSize(.small)
+                        Spacer()
+                        Button("Cancel") {
+                            transferTask?.cancel()
+                        }
+                    }
+                }
                 if let transferMessage {
                     Text(transferMessage)
                         .font(.caption)
@@ -296,9 +307,44 @@ struct SettingsView: View {
     }
 
     private var importConfirmationTitle: String {
-        guard let preview = pendingImportPreview else { return "Import Clipboard History?" }
+        guard let preview = pendingImportArtifact?.preview else {
+            return "Import Clipboard History?"
+        }
         let clipWord = preview.itemCount == 1 ? "clip" : "clips"
         return "Import \(preview.itemCount) \(clipWord) (\(preview.textCount) text, \(preview.imageCount) images)?"
+    }
+
+    private var importConfirmationMessage: String {
+        guard let artifact = pendingImportArtifact else {
+            return "A private backup is created before import."
+        }
+        let merge = store.importProjection(for: artifact, strategy: .merge)
+        let replace = store.importProjection(for: artifact, strategy: .replace)
+        return """
+        Merge: \(projectionSummary(merge)).
+        Replace: \(projectionSummary(replace)).
+        A private backup is created before either action.
+        """
+    }
+
+    private func projectionSummary(_ projection: ClipboardImportProjection) -> String {
+        var parts = [
+            "\(projection.finalCount) final",
+            "\(projection.addedCount) added"
+        ]
+        if projection.deduplicatedCount > 0 {
+            parts.append("\(projection.deduplicatedCount) deduplicated")
+        }
+        if projection.expiredCount > 0 {
+            parts.append("\(projection.expiredCount) expired")
+        }
+        if projection.overLimitCount > 0 {
+            parts.append("\(projection.overLimitCount) over limit")
+        }
+        if projection.retainedPinnedCount > 0 {
+            parts.append("\(projection.retainedPinnedCount) pinned")
+        }
+        return parts.joined(separator: ", ")
     }
 
     private func addIgnoredApplication() {
@@ -313,11 +359,16 @@ struct SettingsView: View {
             defaultFileName: "CopyClip-Lite-History.json"
         ) else { return }
 
-        do {
-            try store.exportHistory(to: url)
-            transferMessage = "Exported history to \(url.lastPathComponent)."
-        } catch {
-            transferError = error.localizedDescription
+        transferTask = Task {
+            defer { transferTask = nil }
+            do {
+                try await store.exportHistoryAsync(to: url)
+                transferMessage = "Exported history to \(url.lastPathComponent)."
+            } catch is CancellationError {
+                transferMessage = "Export cancelled."
+            } catch {
+                transferError = error.localizedDescription
+            }
         }
     }
 
@@ -326,30 +377,41 @@ struct SettingsView: View {
         transferError = nil
         guard let url = ClipboardHistoryTransferPanel.importSourceURL() else { return }
 
-        do {
-            pendingImportURL = url
-            pendingImportPreview = try store.importPreview(from: url)
-            isConfirmingImport = true
-        } catch {
-            clearPendingImport()
-            transferError = error.localizedDescription
+        transferTask = Task {
+            defer { transferTask = nil }
+            do {
+                pendingImportArtifact = try await store.prepareImport(from: url)
+                isConfirmingImport = true
+            } catch is CancellationError {
+                clearPendingImport()
+                transferMessage = "Import cancelled."
+            } catch {
+                clearPendingImport()
+                transferError = error.localizedDescription
+            }
         }
     }
 
     private func performImport(strategy: ClipboardImportStrategy) {
-        guard let url = pendingImportURL else { return }
-        do {
-            let backupURL = try store.importHistory(from: url, strategy: strategy)
-            transferMessage = "Imported history. Backup: \(backupURL.lastPathComponent)"
-        } catch {
-            transferError = error.localizedDescription
+        guard let artifact = pendingImportArtifact else { return }
+        isConfirmingImport = false
+        transferTask = Task {
+            defer { transferTask = nil }
+            do {
+                let projection = store.importProjection(for: artifact, strategy: strategy)
+                let commit = try await store.importHistory(artifact: artifact, strategy: strategy)
+                transferMessage = "Imported \(projection.finalCount) clips. Backup: \(commit.backupURL.lastPathComponent)"
+            } catch is CancellationError {
+                transferMessage = "Import cancelled before history was changed."
+            } catch {
+                transferError = error.localizedDescription
+            }
+            clearPendingImport()
         }
-        clearPendingImport()
     }
 
     private func clearPendingImport() {
-        pendingImportURL = nil
-        pendingImportPreview = nil
+        pendingImportArtifact = nil
         isConfirmingImport = false
     }
 }

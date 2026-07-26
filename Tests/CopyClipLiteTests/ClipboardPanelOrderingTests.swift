@@ -29,4 +29,45 @@ final class ClipboardPanelOrderingTests: XCTestCase {
             ["older pinned", "newest recent", "oldest recent"]
         )
     }
+
+    func testDeletingUnselectedRowPreservesSelection() {
+        let first = ClipboardItem(text: "first")
+        let second = ClipboardItem(text: "second")
+        let third = ClipboardItem(text: "third")
+
+        XCTAssertEqual(
+            ClipboardPanelOrdering.selectionAfterDeleting(
+                deletedID: third.id,
+                selectedID: second.id,
+                before: [first, second, third],
+                after: [first, second]
+            ),
+            second.id
+        )
+    }
+
+    func testDeletingSelectedRowChoosesNextThenPreviousAtEnd() {
+        let first = ClipboardItem(text: "first")
+        let second = ClipboardItem(text: "second")
+        let third = ClipboardItem(text: "third")
+
+        XCTAssertEqual(
+            ClipboardPanelOrdering.selectionAfterDeleting(
+                deletedID: second.id,
+                selectedID: second.id,
+                before: [first, second, third],
+                after: [first, third]
+            ),
+            third.id
+        )
+        XCTAssertEqual(
+            ClipboardPanelOrdering.selectionAfterDeleting(
+                deletedID: third.id,
+                selectedID: third.id,
+                before: [first, third],
+                after: [first]
+            ),
+            first.id
+        )
+    }
 }

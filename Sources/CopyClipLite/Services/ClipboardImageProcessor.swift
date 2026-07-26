@@ -122,6 +122,18 @@ enum ClipboardImageProcessor {
             .joined()
     }
 
+    static func isDecodableImage(_ data: Data) -> Bool {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              CGImageSourceGetCount(source) > 0 else {
+            return false
+        }
+        return CGImageSourceCreateImageAtIndex(
+            source,
+            0,
+            [kCGImageSourceShouldCache: false] as CFDictionary
+        ) != nil
+    }
+
     private static func encodePNG(_ image: CGImage) -> Data? {
         let data = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(

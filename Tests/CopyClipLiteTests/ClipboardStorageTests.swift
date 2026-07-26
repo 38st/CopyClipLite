@@ -35,10 +35,15 @@ final class ClipboardStorageTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: storage.fileURL.path))
 
         let backupFiles = try FileManager.default.contentsOfDirectory(atPath: directory.path)
-            .filter { $0.hasPrefix("clipboard-history.invalid-") && $0.hasSuffix(".json") }
+            .filter { $0.hasPrefix("Recovery-invalid-") }
 
         XCTAssertEqual(backupFiles.count, 1)
-        XCTAssertEqual(try permissions(at: directory.appendingPathComponent(backupFiles[0])), 0o600)
+        let recoveryURL = directory.appendingPathComponent(try XCTUnwrap(backupFiles.first))
+        XCTAssertEqual(try permissions(at: recoveryURL), 0o700)
+        XCTAssertEqual(
+            try permissions(at: recoveryURL.appendingPathComponent("clipboard-history.json")),
+            0o600
+        )
     }
 
     func testLegacyTextOnlyItemsDecodeAsText() throws {
@@ -72,7 +77,8 @@ final class ClipboardStorageTests: XCTestCase {
         XCTAssertEqual(loadedItem.contentKind, .image)
         XCTAssertNil(loadedItem.image?.data)
         XCTAssertEqual(storage.imageData(for: loadedItem), imageData)
-        XCTAssertEqual(storage.thumbnailData(for: loadedItem), thumbnailData)
+        let repairedThumbnail = try XCTUnwrap(storage.thumbnailData(for: loadedItem))
+        XCTAssertTrue(ClipboardImageProcessor.isDecodableImage(repairedThumbnail))
         XCTAssertNotNil(loadedItem.image?.fileName)
         XCTAssertNotNil(loadedItem.image?.thumbnailFileName)
         XCTAssertEqual(loadedItem.previewText, "Image")
@@ -286,6 +292,211 @@ final class ClipboardStorageTests: XCTestCase {
                 return
             }
         }
+    }
+
+    func testCurrentTransferRejectsUnknownContentKindBeforeNormalization() throws {
+        let directory = try makeTemporaryDirectory()
+        let storage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Store"))
+        let importURL = directory.appendingPathComponent("unknown-kind.json")
+        let json = """
+        {
+          "format":"CopyClipLite",
+          "version":1,
+          "items":[{
+            "id":"00000000-0000-0000-0000-000000000001",
+            "text":"value",
+            "contentKind":"future-kind",
+            "copyCount":1
+          }]
+        }
+        """
+        try json.write(to: importURL, atomically: true, encoding: .utf8)
+
+        XCTAssertThrowsError(try storage.importItems(from: importURL)) { error in
+            XCTAssertEqual(
+                error as? ClipboardStorageError,
+                .invalidImportedItem("unknown content kind “future-kind”")
+            )
+        }
+    }
+
+    func testCurrentTransferRejectsBlankTextAndNegativeImageDimensions() throws {
+        let directory = try makeTemporaryDirectory()
+        let storage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Store"))
+        let blankURL = directory.appendingPathComponent("blank.json")
+        let blankJSON = """
+        {
+          "format":"CopyClipLite",
+          "version":1,
+          "items":[{
+            "text":"   ",
+            "contentKind":"text",
+            "copyCount":1
+          }]
+        }
+        """
+        try blankJSON.write(to: blankURL, atomically: true, encoding: .utf8)
+        XCTAssertThrowsError(try storage.importItems(from: blankURL))
+
+        let imageURL = directory.appendingPathComponent("negative-dimensions.json")
+        let imageData = try makePNGData(width: 1, height: 1)
+        let imageJSON = """
+        {
+          "format":"CopyClipLite",
+          "version":1,
+          "items":[{
+            "text":"",
+            "contentKind":"image",
+            "copyCount":1,
+            "image":{
+              "data":"\(imageData.base64EncodedString())",
+              "width":-1,
+              "height":1,
+              "byteCount":\(imageData.count)
+            }
+          }]
+        }
+        """
+        try imageJSON.write(to: imageURL, atomically: true, encoding: .utf8)
+        XCTAssertThrowsError(try storage.importItems(from: imageURL)) { error in
+            XCTAssertEqual(
+                error as? ClipboardStorageError,
+                .invalidImportedItem("image dimensions must be positive")
+            )
+        }
+    }
+
+    func testUnsupportedTransferVersionIsRejected() throws {
+        let directory = try makeTemporaryDirectory()
+        let storage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Store"))
+        let importURL = directory.appendingPathComponent("future.json")
+        try """
+        {"format":"CopyClipLite","version":99,"items":[]}
+        """.write(to: importURL, atomically: true, encoding: .utf8)
+
+        XCTAssertThrowsError(try storage.importItems(from: importURL)) { error in
+            XCTAssertEqual(error as? ClipboardStorageError, .unsupportedTransferVersion(99))
+        }
+    }
+
+    func testExportPreflightsSameVersionItemLimitBeforeWriting() throws {
+        let directory = try makeTemporaryDirectory()
+        let storage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Store"))
+        let exportURL = directory.appendingPathComponent("too-many.json")
+        let items = (0...ClipboardStorage.maximumImportedItems).map {
+            ClipboardItem(text: "clip-\($0)", isPinned: true)
+        }
+
+        XCTAssertThrowsError(try storage.export(items, to: exportURL)) { error in
+            guard case .incompatibleExport = error as? ClipboardStorageError else {
+                XCTFail("Expected incompatible export, got \(error)")
+                return
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: exportURL.path))
+    }
+
+    func testInvalidHistoryQuarantinesImageSidecarsWithManifest() throws {
+        let directory = try makeTemporaryDirectory()
+        let storage = ClipboardStorage(appDirectory: directory)
+        storage.save([
+            ClipboardItem(
+                image: ClipboardImagePayload(
+                    data: try makePNGData(width: 2, height: 2),
+                    width: 2,
+                    height: 2
+                )
+            )
+        ])
+        let sidecars = try FileManager.default.contentsOfDirectory(
+            atPath: storage.imageDirectoryURL.path
+        )
+        XCTAssertFalse(sidecars.isEmpty)
+        try "broken".write(to: storage.fileURL, atomically: true, encoding: .utf8)
+
+        XCTAssertTrue(storage.load().isEmpty)
+
+        let recoveryName = try XCTUnwrap(
+            FileManager.default.contentsOfDirectory(atPath: directory.path)
+                .first { $0.hasPrefix("Recovery-invalid-") }
+        )
+        let recoveredImagesURL = directory
+            .appendingPathComponent(recoveryName)
+            .appendingPathComponent("Images", isDirectory: true)
+        XCTAssertEqual(
+            Set(try FileManager.default.contentsOfDirectory(atPath: recoveredImagesURL.path)),
+            Set(sidecars)
+        )
+
+        storage.save([ClipboardItem(text: "new")])
+        XCTAssertEqual(
+            Set(try FileManager.default.contentsOfDirectory(atPath: recoveredImagesURL.path)),
+            Set(sidecars)
+        )
+    }
+
+    func testMissingThumbnailSelfRepairsFromFullImage() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        storage.save([
+            ClipboardItem(
+                image: ClipboardImagePayload(
+                    data: try makePNGData(width: 4, height: 3),
+                    width: 4,
+                    height: 3
+                )
+            )
+        ])
+        let initiallyLoaded = try XCTUnwrap(storage.load().first)
+        let thumbnailName = try XCTUnwrap(initiallyLoaded.image?.thumbnailFileName)
+        try FileManager.default.removeItem(
+            at: storage.imageDirectoryURL.appendingPathComponent(thumbnailName)
+        )
+
+        let repairedItem = try XCTUnwrap(storage.load().first)
+        let repairedData = try XCTUnwrap(storage.thumbnailData(for: repairedItem))
+
+        XCTAssertTrue(ClipboardImageProcessor.isDecodableImage(repairedData))
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: storage.imageDirectoryURL
+                    .appendingPathComponent(try XCTUnwrap(repairedItem.image?.thumbnailFileName))
+                    .path
+            )
+        )
+    }
+
+    func testLegacyFileBackedImageHashIsBackfilledAndPersisted() throws {
+        let directory = try makeTemporaryDirectory()
+        let storage = ClipboardStorage(appDirectory: directory)
+        let imageData = try makePNGData(width: 2, height: 2)
+        let fileName = "legacy.png"
+        try imageData.write(to: storage.imageDirectoryURL.appendingPathComponent(fileName))
+        let json = """
+        [{
+          "id":"00000000-0000-0000-0000-000000000001",
+          "text":"",
+          "contentKind":"image",
+          "image":{
+            "fileName":"\(fileName)",
+            "width":2,
+            "height":2,
+            "byteCount":\(imageData.count)
+          },
+          "copyCount":1
+        }]
+        """
+        try json.write(to: storage.fileURL, atomically: true, encoding: .utf8)
+
+        let item = try XCTUnwrap(storage.load().first)
+
+        XCTAssertEqual(
+            item.image?.contentHash,
+            ClipboardImageProcessor.contentHash(for: imageData)
+        )
+        XCTAssertTrue(
+            try String(contentsOf: storage.fileURL, encoding: .utf8)
+                .contains(ClipboardImageProcessor.contentHash(for: imageData))
+        )
     }
 
     private func makeTemporaryDirectory() throws -> URL {

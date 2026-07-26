@@ -22,6 +22,20 @@ private actor DelayedImageProcessor: ClipboardImageProcessing {
     }
 }
 
+private final class StubPasteboardWriter: ClipboardPasteboardWriting, @unchecked Sendable {
+    var result: ClipboardPasteboardWriteResult
+    private(set) var requests: [ClipboardPasteboardWriteRequest] = []
+
+    init(result: ClipboardPasteboardWriteResult) {
+        self.result = result
+    }
+
+    func write(_ request: ClipboardPasteboardWriteRequest) -> ClipboardPasteboardWriteResult {
+        requests.append(request)
+        return result
+    }
+}
+
 @MainActor
 final class ClipboardStoreTests: XCTestCase {
     private var tempDirectories: [URL] = []
@@ -79,6 +93,23 @@ final class ClipboardStoreTests: XCTestCase {
 
         XCTAssertEqual(store.items.filter { !$0.isPinned }.count, 10)
         XCTAssertTrue(store.items.contains { $0.text == "pinned" })
+    }
+
+    func testPersistedHistoryLimitIsClampedBeforeStartupPruning() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        storage.save((0..<12).map { ClipboardItem(text: "clip-\($0)") })
+        let defaults = makeDefaults()
+        defaults.set(0, forKey: "historyLimit")
+
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: storage,
+            defaults: defaults
+        )
+
+        XCTAssertEqual(store.historyLimit, 10)
+        XCTAssertEqual(store.items.count, 10)
+        XCTAssertEqual(defaults.integer(forKey: "historyLimit"), 10)
     }
 
     func testTogglePinDoesNotTrimJustUnpinnedItem() throws {
@@ -277,9 +308,79 @@ final class ClipboardStoreTests: XCTestCase {
         store.copy(item)
 
         XCTAssertEqual(pasteboard.data(forType: .png), pngData)
-        XCTAssertNotNil(pasteboard.data(forType: .tiff))
         XCTAssertNil(pasteboard.string(forType: .string))
         XCTAssertEqual(store.items.first?.copyCount, 2)
+    }
+
+    func testImageCopyRequestsPNGWithoutEagerTIFFGeneration() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        storage.save([
+            ClipboardItem(
+                image: ClipboardImagePayload(
+                    data: try makePNGData(width: 2, height: 3),
+                    width: 2,
+                    height: 3
+                )
+            )
+        ])
+        let writer = StubPasteboardWriter(result: .success)
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: storage,
+            defaults: makeDefaults(),
+            pasteboardWriter: writer
+        )
+
+        XCTAssertTrue(store.copy(try XCTUnwrap(store.items.first)))
+
+        let request = try XCTUnwrap(writer.requests.first)
+        XCTAssertEqual(request.required.map(\.type), [NSPasteboard.PasteboardType.png.rawValue])
+        XCTAssertFalse(
+            (request.required + request.optional)
+                .contains { $0.type == NSPasteboard.PasteboardType.tiff.rawValue }
+        )
+    }
+
+    func testRequiredPasteboardWriteFailureDoesNotMutateHistory() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        storage.save([ClipboardItem(text: "hello")])
+        let writer = StubPasteboardWriter(result: .failure)
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: storage,
+            defaults: makeDefaults(),
+            pasteboardWriter: writer
+        )
+        let item = try XCTUnwrap(store.items.first)
+
+        XCTAssertFalse(store.copy(item))
+        XCTAssertEqual(store.items.first?.copyCount, 1)
+        XCTAssertEqual(writer.requests.count, 1)
+        XCTAssertNotNil(store.storageErrorMessage)
+    }
+
+    func testOptionalPasteboardWriteFailureIsReportedAsDegradedCopy() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        storage.save([
+            ClipboardItem(
+                text: "hello",
+                rtfData: Data("rtf".utf8),
+                htmlData: Data("html".utf8)
+            )
+        ])
+        let writer = StubPasteboardWriter(
+            result: .degraded(optionalTypes: [NSPasteboard.PasteboardType.rtf.rawValue])
+        )
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: storage,
+            defaults: makeDefaults(),
+            pasteboardWriter: writer
+        )
+
+        XCTAssertTrue(store.copy(try XCTUnwrap(store.items.first)))
+        XCTAssertEqual(store.items.first?.copyCount, 2)
+        XCTAssertTrue(store.captureWarning?.contains("optional formats") == true)
     }
 
     func testMissingImageDoesNotClearExistingClipboardOrReportCopySuccess() throws {
@@ -653,6 +754,27 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertNil(pasteboard.string(forType: .string))
     }
 
+    func testStripFormattingPreservesExactWhitespaceAndUnicode() throws {
+        let pasteboard = makePasteboard()
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let exactText = "  let café = \"☕️\"\n\n\tprint(café)  "
+        storage.save([ClipboardItem(text: exactText, rtfData: Data("rtf".utf8))])
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: storage,
+            defaults: makeDefaults()
+        )
+
+        store.copyWithTransformation(
+            try XCTUnwrap(store.items.first),
+            transformation: .stripFormatting
+        )
+
+        XCTAssertEqual(pasteboard.string(forType: .string), exactText)
+        XCTAssertNil(pasteboard.data(forType: .rtf))
+        XCTAssertNil(pasteboard.data(forType: .html))
+    }
+
     func testPollingCapturesRTFAndHTMLData() throws {
         let pasteboard = makePasteboard()
         let store = ClipboardStore(
@@ -676,6 +798,88 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertEqual(item.rtfData, rtfData)
         XCTAssertEqual(item.htmlData, htmlData)
         XCTAssertTrue(item.hasRichText)
+    }
+
+    func testPollingExtractsPlainTextFromRTFWithoutStringFlavor() throws {
+        let pasteboard = makePasteboard()
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: ClipboardStorage(appDirectory: try makeTemporaryDirectory()),
+            defaults: makeDefaults()
+        )
+        let attributed = NSAttributedString(string: "RTF only")
+        let rtf = try attributed.data(
+            from: NSRange(location: 0, length: attributed.length),
+            documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+        )
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setData(rtf, forType: .rtf))
+
+        store.pollPasteboardForChanges()
+
+        XCTAssertEqual(store.items.first?.text, "RTF only")
+        XCTAssertEqual(store.items.first?.rtfData, rtf)
+    }
+
+    func testOversizedTextShowsWarningInsteadOfDisappearingSilently() throws {
+        let pasteboard = makePasteboard()
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: ClipboardStorage(appDirectory: try makeTemporaryDirectory()),
+            defaults: makeDefaults()
+        )
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString(String(repeating: "a", count: 20_001), forType: .string))
+
+        store.pollPasteboardForChanges()
+
+        XCTAssertTrue(store.items.isEmpty)
+        XCTAssertTrue(store.captureWarning?.contains("20,000") == true)
+    }
+
+    func testInvalidImageFallsBackToCapturedTextSnapshot() async throws {
+        let pasteboard = makePasteboard()
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: ClipboardStorage(appDirectory: try makeTemporaryDirectory()),
+            defaults: makeDefaults()
+        )
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setData(Data([1, 2, 3]), forType: .png))
+        XCTAssertTrue(pasteboard.setString("preserve me", forType: .string))
+
+        store.pollPasteboardForChanges()
+        try await waitForCapturedItem(in: store)
+
+        XCTAssertEqual(store.items.count, 1)
+        XCTAssertEqual(store.items.first?.contentKind, .text)
+        XCTAssertEqual(store.items.first?.text, "preserve me")
+        XCTAssertNotNil(store.captureWarning)
+    }
+
+    func testPollingCapturesJPEGThroughCanonicalImagePipeline() async throws {
+        let pasteboard = makePasteboard()
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: ClipboardStorage(appDirectory: try makeTemporaryDirectory()),
+            defaults: makeDefaults()
+        )
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: makePNGData(width: 3, height: 2)))
+        let jpeg = try XCTUnwrap(bitmap.representation(using: .jpeg, properties: [:]))
+        pasteboard.clearContents()
+        XCTAssertTrue(
+            pasteboard.setData(
+                jpeg,
+                forType: NSPasteboard.PasteboardType("public.jpeg")
+            )
+        )
+
+        store.pollPasteboardForChanges()
+        try await waitForCapturedItem(in: store)
+
+        XCTAssertEqual(store.items.first?.contentKind, .image)
+        XCTAssertEqual(store.items.first?.image?.width, 3)
+        XCTAssertEqual(store.items.first?.image?.height, 2)
     }
 
     func testCopyWritesRTFAndHTMLToPasteboard() throws {
@@ -760,6 +964,72 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertEqual(Set(store.items.map(\.text)), ["existing", "imported"])
         XCTAssertTrue(FileManager.default.fileExists(atPath: backupURL.path))
         XCTAssertEqual(try permissions(at: backupURL), 0o600)
+    }
+
+    func testAsyncImportAppliesExactPreviewedArtifactWhenSourceChanges() async throws {
+        let directory = try makeTemporaryDirectory()
+        let storage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Store"))
+        let sourceStorage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Source"))
+        let importURL = directory.appendingPathComponent("import.json")
+        storage.save([ClipboardItem(text: "existing")])
+        sourceStorage.save([ClipboardItem(text: "previewed")])
+        try sourceStorage.export(sourceStorage.load(), to: importURL)
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: storage,
+            defaults: makeDefaults(),
+            sourceApplicationProvider: { nil }
+        )
+
+        let artifact = try await store.prepareImport(from: importURL)
+        sourceStorage.save([ClipboardItem(text: "changed after preview")])
+        try sourceStorage.export(sourceStorage.load(), to: importURL)
+        let projection = store.importProjection(for: artifact, strategy: .merge)
+        let commit = try await store.importHistory(artifact: artifact, strategy: .merge)
+
+        XCTAssertEqual(projection.finalCount, 2)
+        XCTAssertEqual(Set(store.items.map(\.text)), ["existing", "previewed"])
+        XCTAssertFalse(store.items.contains { $0.text == "changed after preview" })
+        XCTAssertTrue(FileManager.default.fileExists(atPath: commit.backupURL.path))
+    }
+
+    func testImportProjectionDisclosesDeduplicationExpirationAndLimitDrops() async throws {
+        let directory = try makeTemporaryDirectory()
+        let storage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Store"))
+        let sourceStorage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Source"))
+        let importURL = directory.appendingPathComponent("projection.json")
+        let now = Date()
+        storage.save([ClipboardItem(text: "duplicate", lastCopiedAt: now)])
+        var imported = [
+            ClipboardItem(text: "duplicate", lastCopiedAt: now),
+            ClipboardItem(
+                text: "expired",
+                lastCopiedAt: now.addingTimeInterval(-30 * 24 * 60 * 60)
+            )
+        ]
+        imported.append(contentsOf: (0..<12).map {
+            ClipboardItem(
+                text: "new-\($0)",
+                lastCopiedAt: now.addingTimeInterval(TimeInterval(-$0))
+            )
+        })
+        sourceStorage.save(imported)
+        try sourceStorage.export(sourceStorage.load(), to: importURL)
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: storage,
+            defaults: makeDefaults(),
+            sourceApplicationProvider: { nil }
+        )
+        store.setHistoryLimit(10)
+
+        let artifact = try await store.prepareImport(from: importURL)
+        let projection = store.importProjection(for: artifact, strategy: .merge, now: now)
+
+        XCTAssertEqual(projection.deduplicatedCount, 1)
+        XCTAssertEqual(projection.expiredCount, 1)
+        XCTAssertGreaterThan(projection.overLimitCount, 0)
+        XCTAssertEqual(projection.finalCount, 10)
     }
 
     func testPendingPersistCannotOverwriteMergedImport() async throws {

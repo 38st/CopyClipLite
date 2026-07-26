@@ -51,7 +51,9 @@ struct ClipboardItemRow: View {
 
                             Text("·")
 
-                            Text(item.lastCopiedDescription)
+                            TimelineView(.periodic(from: .now, by: 10)) { _ in
+                                Text(item.lastCopiedDescription)
+                            }
                         }
                         .font(.caption)
                         .foregroundStyle(.secondary)

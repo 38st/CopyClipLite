@@ -35,9 +35,7 @@ enum TextTransformation: String, CaseIterable, Identifiable {
         case .titleCase:
             return text.capitalized
         case .stripFormatting:
-            return text.reducingInternalWhitespace()
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return text
         }
     }
 }
-

@@ -54,4 +54,14 @@ if copyclip_verify_reproducible_zip \
   fail "changed staged app unexpectedly reproduced the verified ZIP"
 fi
 
-echo "PASS: one X.Y.Z release grammar and reproducible ZIP verification"
+RELEASE_WORKFLOW="$REPO_ROOT/.github/workflows/release.yml"
+if grep -Eq 'secrets\.|notary|Developer ID|COPYCLIP_RELEASE_MODE=distribution' \
+  "$RELEASE_WORKFLOW"; then
+  fail "tagged release workflow unexpectedly requires Apple signing or notarization"
+fi
+grep -q 'COPYCLIP_CODESIGN_IDENTITY=-' "$RELEASE_WORKFLOW" \
+  || fail "tagged release workflow does not select ad-hoc signing explicitly"
+grep -q 'not notarized' "$RELEASE_WORKFLOW" \
+  || fail "tagged release notes do not disclose the Gatekeeper limitation"
+
+echo "PASS: one X.Y.Z release grammar, reproducible ZIP, and Apple-account-free release workflow"

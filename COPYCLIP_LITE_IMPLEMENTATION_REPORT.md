@@ -8,12 +8,13 @@ Excluded throughout: security and vulnerability auditing
 
 All repository implementation work in the 37-task backlog is complete. Two multi-agent completion passes found and closed remaining gaps in import serialization, exact cleanup/relaunch image copyability, fault-boundary coverage, image-type validation, bounded capture scheduling, live-image memory bounds, transfer limits/responsiveness, malformed current envelopes, warning ownership, Direct Paste clocks/observation, hotkey safety/layouts, real event routing, lifecycle behavior, release artifact verification, installer replacement, drag-out file representations, resource loading, and honest production-source coverage reporting.
 
-Four release/integration gates require owner-controlled or human action rather than more repository code:
+Three release/integration gates require owner-controlled or human action rather than more repository code:
 
-1. `38st/CopyClipLite` is still private. It must be made public, or the distribution build must use another public release feed, before TASK-005 can be operational for end users.
-2. A notarized distribution release requires the repository’s Developer ID/notary secrets and an owner-selected `vX.Y.Z` tag. The workflow now blocks publication unless tag, plist version, build number, signature, notarization ticket, Gatekeeper, architectures, launch test, and final ZIP all verify.
-3. TASK-033/TASK-037 include a manual VoiceOver and Reduce Motion release matrix. The implementation, automated event/order/lifecycle checks, and a live packaged-app AX-tree inspection are complete; spoken VoiceOver and physical Reduce Motion QA remain in `ACCESSIBILITY_TEST_MATRIX.md`.
-4. TASK-035’s text, PNG, promised-file, and Finder-style file-URL provider contracts are automated, but actual gestures into representative macOS apps and Finder remain a manual interoperability check.
+1. `38st/CopyClipLite` is still private. It must be made public, or the tagged release build must use another public release feed, before TASK-005 can be operational for end users.
+2. TASK-033/TASK-037 include a manual VoiceOver and Reduce Motion release matrix. The implementation, automated event/order/lifecycle checks, and a live packaged-app AX-tree inspection are complete; spoken VoiceOver and physical Reduce Motion QA remain in `ACCESSIBILITY_TEST_MATRIX.md`.
+3. TASK-035’s text, PNG, promised-file, and Finder-style file-URL provider contracts are automated, but actual gestures into representative macOS apps and Finder remain a manual interoperability check.
+
+Apple Developer signing and notarization are outside the selected scope. Tagged releases are ad-hoc signed, require no Apple secrets, verify the exact uploaded ZIP, and disclose the expected Gatekeeper confirmation step.
 
 ## Task status
 
@@ -36,7 +37,7 @@ Four release/integration gates require owner-controlled or human action rather t
 | 015 | Complete | Persisted configs, handler lifecycle, recording suspension, ownership, and injected non-US keyboard-layout labels are hardened |
 | 016 | Complete | The live coordinator’s tested `NSEvent`/`NSTextView` route and pinned-first order drive editing-safe navigation, selection, copy, pin, and delete |
 | 017 | Complete | Direct Paste has explicit attempt state, copied/not-copied semantics, target preservation, generation cancellation, injected monotonic sleep/activation observation, permission recheck, and UI restoration |
-| 018 | Code and local artifact complete; distribution gate | One X.Y.Z contract, full-history monotonic build, exact tag/plist assertion, reproducible final ZIP, draft-upload download/SHA verification, notarization/Gatekeeper gates |
+| 018 | Code and local artifact complete; tag publication gate | One X.Y.Z contract, full-history monotonic build, exact tag/plist assertion, reproducible final ZIP, draft-upload download/SHA verification, explicit ad-hoc signature verification, and Gatekeeper disclosure |
 | 019 | Complete | Failed image processing records the captured text/RTF/HTML snapshot once |
 | 020 | Complete | Plain/rich limits are aligned and visible; oversized optional rich formats degrade with an exact warning |
 | 021 | Complete | Out-of-order duplicate images use latest representation semantics and legacy raw PNG hashes migrate to the canonical hash |
@@ -67,10 +68,10 @@ Four release/integration gates require owner-controlled or human action rather t
 - Shell syntax and workflow YAML parsing: passed.
 - Release-contract and installer harnesses passed; CI now runs both, including all 14 installer cases.
 - Atomic installer probes removed stale files, preserved prior bundles across injected failures, and left no candidate/backup directories after success.
-- Local final ZIP verification passed for version `1.0.0` build `23`.
+- Local final ZIP verification passed for version `1.0.0` build `27`.
 - Final ZIP contains `x86_64` and `arm64`, passes `Bundle`/image/localization resource verification, has a valid ad-hoc signature, and passed fresh-extraction launch verification.
-- Local final ZIP SHA-256: `3df431277d8cbec7a63bf743e9429d6959a2db1b0d2267251c2d53f22195d283`.
+- Local final ZIP SHA-256: `fdb29a133b7ebb0430980f767836f204688cb20eb4810b8e0babf73cf9646e44`.
 - A fresh arm64 package build `24` launched successfully for live AX inspection; every visible clip exposed one row and exactly the named Copy/Pin/Delete actions, with no duplicate icon-button entries.
 - Drag-provider regressions load valid RTF/HTML payloads and verify that image providers advertise a decodable Finder-style file URL whose PNG bytes exactly match the stored image without mutating history.
 - Dropped-JSON regressions verify validated preview-plan identity, provider failure behavior, user-visible cancellation, and rejection of late callbacks without mutating history.
-- Local Gatekeeper rejection is expected for an ad-hoc build; distribution mode requires and verifies Developer ID signing, notarization, stapling, and Gatekeeper acceptance.
+- Local Gatekeeper rejection is expected for the selected ad-hoc release scope and is disclosed in tagged release notes; Apple Developer signing and notarization are not completion gates.

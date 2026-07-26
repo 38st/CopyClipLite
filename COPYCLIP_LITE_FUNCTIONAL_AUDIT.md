@@ -5,7 +5,7 @@ Audited commit: `db0a3d3de6f72b6e721d9025710bc6271efd3a65` (`main`)
 Scope: product behavior, functional correctness, reliability, data integrity, UX, performance, test coverage, packaging, and release readiness
 Explicit exclusion: security and vulnerability auditing
 
-Implementation follow-up: see `COPYCLIP_LITE_IMPLEMENTATION_REPORT.md` for the completed remediation status, verification evidence, and the remaining publication/manual-release gates.
+Implementation follow-up: see `COPYCLIP_LITE_IMPLEMENTATION_REPORT.md` for the completed remediation status, verification evidence, and the remaining publication/manual-integration gates. Apple Developer signing and notarization are explicitly outside the selected release scope.
 
 ## Executive conclusion
 
@@ -383,7 +383,7 @@ Implementation:
 
 - Resolve the GitHub Actions billing/spending-limit block.
 - Make releases anonymously reachable or publish a public update manifest/feed elsewhere.
-- Publish and smoke-test the first signed/notarized release.
+- Publish and smoke-test the first verified ad-hoc release with an explicit Gatekeeper installation warning.
 - Make the current green CI job required for `main` if repository policy permits.
 - Add an anonymous feed/asset smoke check.
 
@@ -765,8 +765,8 @@ Confidence: Confirmed
 Evidence:
 
 - CI uses shallow checkout, while build number is `git rev-list --count HEAD`; releases therefore tend to get build `1`.
-- The final post-staple ZIP is rebuilt after the ZIP that receives full extraction/codesign verification.
-- Gatekeeper assesses the staging app, not a fresh extraction of the final published ZIP.
+- The final ZIP is rebuilt after the candidate that receives full extraction/signature verification, so the published bytes can differ from the verified bytes.
+- The release path does not explicitly disclose the expected Gatekeeper rejection for an ad-hoc signed artifact.
 - Packaging accepts both `X.Y` and `X.Y.Z`, while the updater's raw numeric string comparison treats `1.0.0` as newer than `1.0`.
 
 Implementation:
@@ -774,8 +774,9 @@ Implementation:
 - Fetch full history or pass an explicit monotonic CI build number.
 - Pass and assert the triggering tag as the short version.
 - Use one normalized release-version grammar and comparison model in scripts and updater.
-- Re-extract the final post-staple ZIP.
-- Validate plist/version, signatures, stapler, Gatekeeper, architectures, and launch against that extraction.
+- Re-extract the final ZIP.
+- Validate plist/version, ad-hoc signature integrity, architectures, resources, and launch against that extraction.
+- Disclose that the artifact is not notarized and may require the user to confirm its first launch through Gatekeeper.
 - Publish only the verified artifact.
 
 Acceptance criteria:
@@ -783,7 +784,7 @@ Acceptance criteria:
 - Consecutive releases have increasing build numbers.
 - Tag and plist version match exactly.
 - Equivalent versions such as `1.0` and `1.0.0` cannot produce a false update prompt.
-- Any missing architecture, ticket, signature, or launch failure blocks publication.
+- Any missing architecture, invalid ad-hoc signature, resource failure, or launch failure blocks publication.
 - The uploaded ZIP is byte-for-byte the verified ZIP.
 
 ### TASK-019 — Preserve valid text when image processing fails

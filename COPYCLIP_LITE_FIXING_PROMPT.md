@@ -26,10 +26,10 @@ Use subagents for bounded independent verification with explicit goals and non-o
 Do not claim the following gates complete without direct evidence:
 
 - an anonymously reachable update feed and downloadable release asset;
-- a signed, notarized, stapled tagged distribution release;
+- an anonymously downloadable, checksum-verified tagged ad-hoc release with the required Gatekeeper warning;
 - the manual VoiceOver matrix.
 
-Those require owner credentials, repository/release decisions, or human assistive-technology QA. Ask for the required authorization or evidence rather than changing repository visibility, creating a release, or changing macOS accessibility settings on your own.
+Those require repository/release decisions or human assistive-technology QA. Apple Developer signing and notarization are outside the selected scope. Ask for the required authorization or evidence rather than changing repository visibility, creating a release, or changing macOS accessibility settings on your own.
 
 If a verified regression exists, add a deterministic regression test, implement the smallest coherent fix, rerun targeted and full verification, and update the implementation report. Do not weaken validation or coverage gates to make checks pass.
 

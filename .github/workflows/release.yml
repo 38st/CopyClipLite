@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 jobs:
-  notarized-release:
+  ad-hoc-release:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -26,45 +26,15 @@ jobs:
       - name: Verify release contract
         run: bash script/tests/task_018_release_harness.sh
 
-      - name: Import Developer ID certificate
-        env:
-          CERTIFICATE_BASE64: ${{ secrets.MACOS_CERTIFICATE_BASE64 }}
-          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
-        run: |
-          CERTIFICATE_PATH="$RUNNER_TEMP/certificate.p12"
-          KEYCHAIN_PATH="$RUNNER_TEMP/copyclip.keychain-db"
-          echo "$CERTIFICATE_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security import "$CERTIFICATE_PATH" -P "$CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
-          security list-keychain -d user -s "$KEYCHAIN_PATH"
-          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-
-      - name: Configure notarization profile
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APP_SPECIFIC_PASSWORD: ${{ secrets.APP_SPECIFIC_PASSWORD }}
-        run: |
-          xcrun notarytool store-credentials CopyClipLiteNotary \
-            --apple-id "$APPLE_ID" \
-            --team-id "$APPLE_TEAM_ID" \
-            --password "$APP_SPECIFIC_PASSWORD"
-
       - name: Test
         run: |
           swift test
           swift build -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
 
-      - name: Build, sign, notarize, and staple
+      - name: Build and verify ad-hoc release
         run: |
-          IDENTITY="$(security find-identity -v -p codesigning | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -1)"
-          test -n "$IDENTITY"
-          COPYCLIP_RELEASE_MODE=distribution \
-          COPYCLIP_CODESIGN_IDENTITY="$IDENTITY" \
-          COPYCLIP_NOTARY_PROFILE=CopyClipLiteNotary \
+          COPYCLIP_RELEASE_MODE=local \
+          COPYCLIP_CODESIGN_IDENTITY=- \
           COPYCLIP_VERSION="$COPYCLIP_RELEASE_VERSION" \
           COPYCLIP_EXPECTED_VERSION="$COPYCLIP_RELEASE_VERSION" \
           COPYCLIP_BUILD_NUMBER="${{ github.run_number }}" \
@@ -79,11 +49,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          cat > "$RUNNER_TEMP/release-notes.md" <<'EOF'
+          ## macOS installation note
+
+          This build is ad-hoc signed and not notarized because the project does not use an Apple Developer Program account. macOS Gatekeeper may require Control-clicking the app, choosing Open, and confirming the launch.
+          EOF
           gh release create "$GITHUB_REF_NAME" \
             dist/CopyClip-Lite-macOS.zip \
             dist/CopyClip-Lite-macOS.zip.sha256 \
             --draft \
-            --generate-notes \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
             --verify-tag
           echo "created=true" >> "$GITHUB_OUTPUT"
 

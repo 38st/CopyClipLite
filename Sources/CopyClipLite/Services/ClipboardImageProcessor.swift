@@ -9,7 +9,7 @@ struct ClipboardImageCandidate: Sendable {
     let isPNG: Bool
 }
 
-enum ClipboardImageProcessingError: LocalizedError, Sendable {
+enum ClipboardImageProcessingError: LocalizedError, Sendable, Equatable {
     case encodedDataTooLarge
     case invalidImage
     case dimensionsTooLarge
@@ -35,7 +35,10 @@ protocol ClipboardImageProcessing: Sendable {
 
 actor ClipboardImageProcessingService: ClipboardImageProcessing {
     func process(_ candidate: ClipboardImageCandidate) throws -> ClipboardImagePayload {
-        try ClipboardImageProcessor.process(candidate)
+        try Task.checkCancellation()
+        let payload = try ClipboardImageProcessor.process(candidate)
+        try Task.checkCancellation()
+        return payload
     }
 }
 
@@ -43,7 +46,8 @@ enum ClipboardImageProcessor {
     static let maximumEncodedBytes = 10 * 1024 * 1024
     static let maximumInputBytes = 30 * 1024 * 1024
     static let maximumDimension = 16_384
-    static let maximumPixelCount = 100_000_000
+    static let maximumPixelCount = 4_096 * 4_096
+    static let maximumProcessingResidentGrowthBytes = 512 * 1024 * 1024
 
     static func process(_ candidate: ClipboardImageCandidate) throws -> ClipboardImagePayload {
         guard candidate.data.count <= maximumInputBytes else {
@@ -51,12 +55,17 @@ enum ClipboardImageProcessor {
         }
         guard let source = CGImageSourceCreateWithData(candidate.data as CFData, nil),
               CGImageSourceGetCount(source) > 0,
+              let sourceType = CGImageSourceGetType(source),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
                 as? [CFString: Any],
               let width = properties[kCGImagePropertyPixelWidth] as? Int,
               let height = properties[kCGImagePropertyPixelHeight] as? Int,
               width > 0,
               height > 0 else {
+            throw ClipboardImageProcessingError.invalidImage
+        }
+        if candidate.isPNG,
+           sourceType as String != UTType.png.identifier {
             throw ClipboardImageProcessingError.invalidImage
         }
 
@@ -100,11 +109,13 @@ enum ClipboardImageProcessor {
             kCGImageSourceCreateThumbnailWithTransform: false,
             kCGImageSourceShouldCacheImmediately: false,
         ]
-        let thumbnailData = CGImageSourceCreateThumbnailAtIndex(
+        guard let thumbnailData = CGImageSourceCreateThumbnailAtIndex(
             normalizedSource,
             0,
             thumbnailOptions as CFDictionary
-        ).flatMap(encodePNG)
+        ).flatMap(encodePNG) else {
+            throw ClipboardImageProcessingError.conversionFailed
+        }
 
         return ClipboardImagePayload(
             data: pngData,

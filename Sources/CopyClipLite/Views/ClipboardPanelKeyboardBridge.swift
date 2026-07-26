@@ -1,13 +1,72 @@
 import AppKit
 import SwiftUI
 
-enum ClipboardPanelKeyAction {
+enum ClipboardPanelKeyAction: Equatable {
     case moveUp
     case moveDown
     case copySelected
     case deleteSelected
     case togglePinSelected
     case focusSearch
+}
+
+struct ClipboardPanelKeyInput {
+    let keyCode: UInt16
+    let charactersIgnoringModifiers: String?
+    let modifierFlags: NSEvent.ModifierFlags
+    let isEditingText: Bool
+}
+
+enum ClipboardPanelKeyRouting {
+    static func action(for input: ClipboardPanelKeyInput) -> ClipboardPanelKeyAction? {
+        let modifiers = input.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let normalizedModifiers = modifiers.subtracting([.capsLock, .numericPad, .function])
+        let commandOnly = normalizedModifiers == .command
+        let noModifiers = normalizedModifiers.isEmpty
+
+        if commandOnly, input.charactersIgnoringModifiers?.lowercased() == "f" {
+            return .focusSearch
+        }
+
+        if commandOnly, input.charactersIgnoringModifiers?.lowercased() == "p" {
+            return .togglePinSelected
+        }
+
+        if commandOnly, input.keyCode == 51 || input.keyCode == 117 {
+            return .deleteSelected
+        }
+
+        guard noModifiers else {
+            return nil
+        }
+
+        switch input.keyCode {
+        case 125:
+            return .moveDown
+        case 126:
+            return .moveUp
+        case 36, 76:
+            return .copySelected
+        case 51, 117:
+            return input.isEditingText ? nil : .deleteSelected
+        default:
+            guard !input.isEditingText,
+                  input.charactersIgnoringModifiers?.lowercased() == "p" else {
+                return nil
+            }
+            return .togglePinSelected
+        }
+    }
+
+    static func handle(
+        _ input: ClipboardPanelKeyInput,
+        using handler: (ClipboardPanelKeyAction) -> Bool
+    ) -> Bool {
+        guard let action = action(for: input) else {
+            return false
+        }
+        return handler(action)
+    }
 }
 
 struct ClipboardPanelKeyboardBridge: NSViewRepresentable {
@@ -62,44 +121,15 @@ struct ClipboardPanelKeyboardBridge: NSViewRepresentable {
         }
 
         private func handle(_ event: NSEvent) -> Bool {
-            let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            let normalizedModifiers = modifiers.subtracting([.capsLock, .numericPad, .function])
-            let commandOnly = normalizedModifiers == .command
-            let noModifiers = normalizedModifiers.isEmpty
-
-            if commandOnly, event.charactersIgnoringModifiers?.lowercased() == "f" {
-                return handle(.focusSearch)
-            }
-
-            if commandOnly, event.charactersIgnoringModifiers?.lowercased() == "p" {
-                return handle(.togglePinSelected)
-            }
-
-            if commandOnly, event.keyCode == 51 || event.keyCode == 117 {
-                return handle(.deleteSelected)
-            }
-
-            guard noModifiers else {
-                return false
-            }
-
-            switch event.keyCode {
-            case 125:
-                return handle(.moveDown)
-            case 126:
-                return handle(.moveUp)
-            case 36, 76:
-                return handle(.copySelected)
-            case 51, 117:
-                guard !isEditingText else { return false }
-                return handle(.deleteSelected)
-            default:
-                guard !isEditingText,
-                      event.charactersIgnoringModifiers?.lowercased() == "p" else {
-                    return false
-                }
-                return handle(.togglePinSelected)
-            }
+            ClipboardPanelKeyRouting.handle(
+                ClipboardPanelKeyInput(
+                    keyCode: event.keyCode,
+                    charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+                    modifierFlags: event.modifierFlags,
+                    isEditingText: isEditingText
+                ),
+                using: handle
+            )
         }
 
         private func eventBelongsToViewWindow(_ event: NSEvent) -> Bool {

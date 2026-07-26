@@ -45,14 +45,26 @@ struct PasteTargetRuntime {
     )
 }
 
+enum PasteAttemptState: Equatable {
+    case idle
+    case preflighting
+    case activating(target: String)
+    case waitingForTarget(target: String)
+    case posting(target: String)
+    case postAttempted(target: String)
+    case failed(message: String, clipWasCopied: Bool)
+}
+
 @MainActor
 final class PasteTargetController: ObservableObject {
     @Published private(set) var isAccessibilityGranted: Bool
     @Published private(set) var lastError: String?
+    @Published private(set) var attemptState: PasteAttemptState = .idle
 
     private var lastExternalApplication: (any PasteTargetApplication)?
     nonisolated(unsafe) private var activationObserver: NotificationObserverToken?
     private var pendingPasteTask: Task<Void, Never>?
+    private var pendingPasteOwnsHiddenUI = false
     private var pasteRequestGeneration: UInt64 = 0
     private var isPreservingTargetForSystemSettings = false
     private let runtime: PasteTargetRuntime
@@ -117,33 +129,47 @@ final class PasteTargetController: ObservableObject {
     }
 
     func paste(_ item: ClipboardItem, using store: ClipboardStore) {
-        cancelPendingPaste()
+        cancelPendingPaste(restoreUI: true)
+        attemptState = .preflighting
         refreshPermission()
         guard isAccessibilityGranted else {
-            fail(Self.permissionError, restoreUI: false)
+            fail(Self.permissionError, restoreUI: false, clipWasCopied: false)
             return
         }
         guard let target = lastExternalApplication, !target.pasteIsTerminated else {
-            fail("Open the destination app once, then try Direct Paste again.", restoreUI: false)
+            fail(
+                "Open the destination app once, then try Direct Paste again.",
+                restoreUI: false,
+                clipWasCopied: false
+            )
             return
         }
         guard store.copy(item) else {
-            fail(store.storageErrorMessage ?? "The clip could not be copied.", restoreUI: false)
+            fail(
+                store.storageErrorMessage ?? "The clip could not be copied.",
+                restoreUI: false,
+                clipWasCopied: false
+            )
             return
         }
 
         pasteRequestGeneration &+= 1
         let requestGeneration = pasteRequestGeneration
+        let targetName = target.pasteLocalizedName ?? "The destination app"
         lastError = nil
+        attemptState = .activating(target: targetName)
         runtime.hideApplication()
+        pendingPasteOwnsHiddenUI = true
         guard target.activateForPaste() else {
             fail(
-                "\(target.pasteLocalizedName ?? "The destination app") could not be activated.",
-                restoreUI: true
+                "\(targetName) could not be activated.",
+                restoreUI: true,
+                clipWasCopied: true
             )
             return
         }
 
+        attemptState = .waitingForTarget(target: targetName)
         pendingPasteTask = Task { @MainActor [weak self, target] in
             guard let self else { return }
             for _ in 0..<self.activationPollCount {
@@ -158,35 +184,50 @@ final class PasteTargetController: ObservableObject {
             guard target.pasteIsActive else {
                 self.fail(
                     "The destination app did not become active, so nothing was pasted.",
-                    restoreUI: true
+                    restoreUI: true,
+                    clipWasCopied: true
                 )
                 return
             }
 
             try? await Task.sleep(nanoseconds: self.stabilizationNanoseconds)
             guard !Task.isCancelled,
-                  self.pasteRequestGeneration == requestGeneration,
-                  !target.pasteIsTerminated,
+                  self.pasteRequestGeneration == requestGeneration else {
+                return
+            }
+            guard !target.pasteIsTerminated,
                   target.pasteIsActive else {
                 self.fail(
                     "The destination app was no longer ready, so nothing was pasted.",
-                    restoreUI: true
+                    restoreUI: true,
+                    clipWasCopied: true
                 )
                 return
             }
 
             self.refreshPermission()
             guard self.isAccessibilityGranted else {
-                self.fail(Self.permissionError, restoreUI: true)
+                self.fail(
+                    Self.permissionError,
+                    restoreUI: true,
+                    clipWasCopied: true
+                )
                 return
             }
+            self.attemptState = .posting(target: targetName)
             guard self.runtime.simulatePaste() else {
-                self.fail("macOS could not create the paste event.", restoreUI: true)
+                self.fail(
+                    "macOS could not create the paste event.",
+                    restoreUI: true,
+                    clipWasCopied: true
+                )
                 return
             }
 
             self.pendingPasteTask = nil
+            self.pendingPasteOwnsHiddenUI = false
             self.lastError = nil
+            self.attemptState = .postAttempted(target: targetName)
         }
     }
 
@@ -210,7 +251,7 @@ final class PasteTargetController: ObservableObject {
         )
     }
 
-    private func handleActivation(_ application: any PasteTargetApplication) {
+    func handleActivation(_ application: any PasteTargetApplication) {
         let isOwnApplication = application.pasteBundleIdentifier == Bundle.main.bundleIdentifier
             || application.pasteProcessIdentifier == ProcessInfo.processInfo.processIdentifier
         if isOwnApplication {
@@ -232,18 +273,38 @@ final class PasteTargetController: ObservableObject {
         lastExternalApplication = application
     }
 
-    private func cancelPendingPaste() {
+    private func cancelPendingPaste(restoreUI: Bool = false) {
+        let shouldRestore = restoreUI
+            && pendingPasteTask != nil
+            && pendingPasteOwnsHiddenUI
         pasteRequestGeneration &+= 1
         pendingPasteTask?.cancel()
         pendingPasteTask = nil
+        pendingPasteOwnsHiddenUI = false
+        if shouldRestore {
+            runtime.restoreApplication()
+        }
     }
 
-    private func fail(_ message: String, restoreUI: Bool) {
+    private func fail(
+        _ message: String,
+        restoreUI: Bool,
+        clipWasCopied: Bool
+    ) {
         pendingPasteTask?.cancel()
         pendingPasteTask = nil
-        lastError = message
+        let outcome = clipWasCopied
+            ? "The clip is still on your clipboard."
+            : "Nothing was copied."
+        let fullMessage = "\(message) \(outcome)"
+        lastError = fullMessage
+        attemptState = .failed(
+            message: fullMessage,
+            clipWasCopied: clipWasCopied
+        )
         if restoreUI {
             runtime.restoreApplication()
+            pendingPasteOwnsHiddenUI = false
         }
         NSSound.beep()
     }

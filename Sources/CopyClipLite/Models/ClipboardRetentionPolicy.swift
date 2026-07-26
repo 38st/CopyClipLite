@@ -1,6 +1,6 @@
 import Foundation
 
-enum ClipboardRetentionPolicy: String, CaseIterable, Identifiable {
+enum ClipboardRetentionPolicy: String, CaseIterable, Identifiable, Sendable {
     case oneDay
     case sevenDays
     case thirtyDays

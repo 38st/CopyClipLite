@@ -309,7 +309,7 @@ struct SettingsView: View {
     }
 
     private var importConfirmationTitle: String {
-        guard let preview = transferState.pendingImportArtifact?.preview else {
+        guard let preview = transferState.pendingImportPlan?.artifact.preview else {
             return "Import Clipboard History?"
         }
         let clipWord = preview.itemCount == 1 ? "clip" : "clips"
@@ -317,11 +317,11 @@ struct SettingsView: View {
     }
 
     private var importConfirmationMessage: String {
-        guard let artifact = transferState.pendingImportArtifact else {
+        guard let plan = transferState.pendingImportPlan else {
             return "A private backup is created before import."
         }
-        let merge = store.importProjection(for: artifact, strategy: .merge)
-        let replace = store.importProjection(for: artifact, strategy: .replace)
+        let merge = plan.mergeProjection
+        let replace = plan.replaceProjection
         return """
         Merge: \(projectionSummary(merge)).
         Replace: \(projectionSummary(replace)).
@@ -382,7 +382,8 @@ struct SettingsView: View {
         transferState.task = Task {
             defer { transferState.task = nil }
             do {
-                transferState.pendingImportArtifact = try await store.prepareImport(from: url)
+                let artifact = try await store.prepareImport(from: url)
+                transferState.pendingImportPlan = store.importPlan(for: artifact)
                 transferState.isConfirmingImport = true
             } catch is CancellationError {
                 clearPendingImport()
@@ -414,14 +415,18 @@ struct SettingsView: View {
     }
 
     private func performImport(strategy: ClipboardImportStrategy) {
-        guard let artifact = transferState.pendingImportArtifact else { return }
+        guard let plan = transferState.pendingImportPlan else { return }
         transferState.isConfirmingImport = false
         transferState.task = Task {
             defer { transferState.task = nil }
             do {
-                let projection = store.importProjection(for: artifact, strategy: strategy)
-                let commit = try await store.importHistory(artifact: artifact, strategy: strategy)
-                transferState.message = "Imported \(projection.finalCount) clips. Backup: \(commit.backupURL.lastPathComponent)"
+                let projection = plan.projection(for: strategy)
+                let commit = try await store.importHistory(plan: plan, strategy: strategy)
+                transferState.message = importCompletionMessage(
+                    projection: projection,
+                    actualCount: commit.items.count,
+                    backupURL: commit.backupURL
+                )
             } catch is CancellationError {
                 transferState.message = "Import cancelled before history was changed."
             } catch {
@@ -432,8 +437,21 @@ struct SettingsView: View {
     }
 
     private func clearPendingImport() {
-        transferState.pendingImportArtifact = nil
+        transferState.pendingImportPlan = nil
         transferState.isConfirmingImport = false
+    }
+
+    private func importCompletionMessage(
+        projection: ClipboardImportProjection,
+        actualCount: Int,
+        backupURL: URL
+    ) -> String {
+        "Imported \(actualCount) clips (\(projection.addedCount) added, "
+            + "\(projection.deduplicatedCount) deduplicated, "
+            + "\(projection.expiredCount) expired, "
+            + "\(projection.overLimitCount) over limit, "
+            + "\(projection.retainedPinnedCount) pinned). "
+            + "Backup: \(backupURL.lastPathComponent)"
     }
 }
 
@@ -441,7 +459,7 @@ struct SettingsView: View {
 private final class SettingsTransferState: ObservableObject {
     @Published var message: String?
     @Published var error: String?
-    @Published var pendingImportArtifact: ClipboardImportArtifact?
+    @Published var pendingImportPlan: ClipboardImportPlan?
     @Published var isConfirmingImport = false
     var task: Task<Void, Never>?
 
@@ -484,10 +502,11 @@ private final class SettingsTransferState: ObservableObject {
             guard let self else { return }
             defer { task = nil }
             do {
-                pendingImportArtifact = try await store.prepareImport(
+                let artifact = try await store.prepareImport(
                     data: data,
                     sourceFileName: sourceFileName
                 )
+                pendingImportPlan = store.importPlan(for: artifact)
                 isConfirmingImport = true
             } catch is CancellationError {
                 clearPendingImport()
@@ -500,7 +519,7 @@ private final class SettingsTransferState: ObservableObject {
     }
 
     private func clearPendingImport() {
-        pendingImportArtifact = nil
+        pendingImportPlan = nil
         isConfirmingImport = false
     }
 }

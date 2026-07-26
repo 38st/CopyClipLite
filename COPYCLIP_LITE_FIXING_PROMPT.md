@@ -1,50 +1,40 @@
-# Prompt for a separate fixing chat
+# Prompt for a separate completion/verification chat
 
 Copy and paste the prompt below into a new Codex chat opened at the repository root.
 
 ---
 
-Read `/Users/armanruzgar/dev/CopyClipLite/COPYCLIP_LITE_FUNCTIONAL_AUDIT.md` completely before changing any files.
+Read these files completely before changing anything:
 
-Your goal is to implement the audit’s remediation backlog for CopyClip Lite. This is a functional correctness, reliability, data-integrity, UX, performance, test, packaging, and release-readiness effort. Do not perform or add a security audit.
+- `/Users/armanruzgar/dev/CopyClipLite/COPYCLIP_LITE_FUNCTIONAL_AUDIT.md`
+- `/Users/armanruzgar/dev/CopyClipLite/COPYCLIP_LITE_IMPLEMENTATION_REPORT.md`
+- `/Users/armanruzgar/dev/CopyClipLite/ACCESSIBILITY_TEST_MATRIX.md`
 
-Start by inspecting `AGENTS.md`, `git status -sb`, `origin/HEAD`, the current branch/upstream, and the audited source. Run the existing baseline tests. Treat the audit as a prioritized plan, not as unquestionable truth: verify each finding against current code before implementing it, preserve unrelated user changes, and record any finding that is already fixed or needs a product decision.
+The 37-task repository remediation has been implemented. Your goal is to independently verify the implementation report against the current code, fix any regression you can reproduce, and coordinate only the remaining owner/manual release gates. This is a functional correctness, reliability, data-integrity, UX, performance, test, packaging, and release-readiness effort. Do not perform or add a security audit.
 
-Work in the audit’s phase order. Begin with TASK-001 through TASK-004 and the test seams needed for them. Do not start polish or optional scope work while P0 data-integrity tasks remain. Keep tasks small and reviewable, but account for dependencies: TASK-001 through TASK-003 should converge on one transactional storage/persistence design rather than a set of competing patches.
+Start by inspecting `AGENTS.md`, `git status -sb`, `origin/HEAD`, the current branch/upstream, and the exact current commit. Run `swift test`, the strict-concurrency build, `./script/check_coverage.sh`, `./script/tests/task_031_harness.sh`, and local release packaging. Treat both reports as evidence to verify, not as unquestionable truth. Preserve unrelated user changes.
 
-For every task:
+Audit all 37 task rows, prioritizing the areas changed by the completion pass:
 
-1. Restate the failure and verify its current reproduction/control flow.
-2. Add a regression test that fails for the old behavior when deterministic testing is possible.
-3. Implement the smallest coherent fix.
-4. Run targeted tests, then `swift test`.
-5. Run `swift build -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors`.
-6. For image, transfer, or packaging changes, run the relevant boundary/performance/artifact checks described in the audit.
-7. Check every acceptance criterion before marking the task complete.
-8. Update a concise task checklist in your working notes with evidence, tests, and remaining risks.
+1. staged sidecar/manifest failure boundaries and import/persistence ordering;
+2. bounded image scheduling, canonical hashes, image types/orientations, thumbnail repair, and transfer limits;
+3. required/optional pasteboard failures, Direct Paste state, keyboard routing, hotkeys, login items, and updater responses;
+4. atomic installation, final ZIP verification, drag/drop, accessibility semantics, and honest production-source coverage.
 
-Use subagents only for bounded independent investigations or test design, with explicit goals and non-overlapping file ownership. The primary agent must integrate and verify all results. Keep the no-security scope in every delegated prompt.
+Use subagents for bounded independent verification with explicit goals and non-overlapping file ownership. Require evidence and targeted tests from each agent. Keep the no-security scope in every delegated prompt.
 
-Important implementation constraints:
+Do not claim the following gates complete without direct evidence:
 
-- Preserve existing history on every failed storage operation.
-- Make JSON manifest and image-sidecar commits transactional.
-- Prevent stale persistence/capture tasks from mutating a newer generation.
-- Keep UI work on the main actor and expensive I/O/decoding off it.
-- Introduce narrow injected adapters for failure-prone platform services rather than relying on timing or live system state in tests.
-- Do not weaken validation or delete existing regression coverage to make tests pass.
-- Do not change documented product semantics silently; flag genuine scope decisions.
+- an anonymously reachable update feed and downloadable release asset;
+- a signed, notarized, stapled tagged distribution release;
+- the manual VoiceOver matrix.
 
-After each cohesive phase, report:
+Those require owner credentials, repository/release decisions, or human assistive-technology QA. Ask for the required authorization or evidence rather than changing repository visibility, creating a release, or changing macOS accessibility settings on your own.
 
-- tasks completed;
-- files changed;
-- tests/checks run and results;
-- acceptance criteria satisfied;
-- remaining tasks and any blockers.
+If a verified regression exists, add a deterministic regression test, implement the smallest coherent fix, rerun targeted and full verification, and update the implementation report. Do not weaken validation or coverage gates to make checks pass.
 
 Follow the repository’s Git closeout instructions. Commit and publish completed, verified work to the default branch only when repository state is safe and the branch rules allow it. Never force-push.
 
-Begin now with a short implementation plan for Phase 1, then implement it rather than stopping at analysis.
+Begin with a short verification plan, dispatch bounded subagents, and continue through evidence-backed completion rather than stopping at analysis.
 
 ---

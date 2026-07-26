@@ -11,17 +11,23 @@ case "$MODE" in
     ;;
 esac
 
+ROOT_DIR="${COPYCLIP_ROOT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 APP_NAME="CopyClipLite"
 APP_DISPLAY_NAME="${COPYCLIP_APP_DISPLAY_NAME:-CopyClip Lite}"
 BUNDLE_ID="${COPYCLIP_BUNDLE_ID:-io.github.38st.CopyClipLite}"
-GIT_VERSION="$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" describe --tags --match 'v[0-9]*' --abbrev=0 2>/dev/null | sed 's/^v//' || true)"
+GIT_VERSION="$(git -C "$ROOT_DIR" describe --tags --match 'v[0-9]*' --abbrev=0 2>/dev/null | sed 's/^v//' || true)"
 APP_VERSION="${COPYCLIP_VERSION:-${GIT_VERSION:-1.0.0}}"
-APP_BUILD_NUMBER="${COPYCLIP_BUILD_NUMBER:-$(git -C "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" rev-list --count HEAD)}"
+APP_BUILD_NUMBER="${COPYCLIP_BUILD_NUMBER:-$(git -C "$ROOT_DIR" rev-list --count HEAD)}"
 UPDATE_FEED_URL="${COPYCLIP_UPDATE_FEED_URL:-}"
 MIN_SYSTEM_VERSION="14.0"
 CODESIGN_IDENTITY="${COPYCLIP_CODESIGN_IDENTITY:--}"
+PKILL_COMMAND="${COPYCLIP_PKILL_COMMAND:-pkill}"
+OPEN_COMMAND="${COPYCLIP_OPEN_COMMAND:-/usr/bin/open}"
+LLDB_COMMAND="${COPYCLIP_LLDB_COMMAND:-lldb}"
+LOG_COMMAND="${COPYCLIP_LOG_COMMAND:-/usr/bin/log}"
+SLEEP_COMMAND="${COPYCLIP_SLEEP_COMMAND:-sleep}"
+PGREP_COMMAND="${COPYCLIP_PGREP_COMMAND:-pgrep}"
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 STAGING_DIR="$DIST_DIR/staging.noindex"
 APP_BUNDLE="$STAGING_DIR/$APP_DISPLAY_NAME.app"
@@ -115,11 +121,11 @@ codesign "${CODESIGN_ARGS[@]}" "$APP_BUNDLE" >/dev/null
 codesign --verify --deep --strict "$APP_BUNDLE"
 
 stop_running_copy() {
-  pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+  "$PKILL_COMMAND" -x "$APP_NAME" >/dev/null 2>&1 || true
 }
 
 open_app() {
-  /usr/bin/open -n "$APP_BUNDLE"
+  "$OPEN_COMMAND" -n "$APP_BUNDLE"
 }
 
 case "$MODE" in
@@ -131,22 +137,22 @@ case "$MODE" in
     ;;
   --debug|debug)
     stop_running_copy
-    lldb -- "$APP_BINARY"
+    "$LLDB_COMMAND" -- "$APP_BINARY"
     ;;
   --logs|logs)
     stop_running_copy
     open_app
-    /usr/bin/log stream --info --style compact --predicate "process == \"$APP_NAME\""
+    "$LOG_COMMAND" stream --info --style compact --predicate "process == \"$APP_NAME\""
     ;;
   --telemetry|telemetry)
     stop_running_copy
     open_app
-    /usr/bin/log stream --info --style compact --predicate "subsystem == \"$BUNDLE_ID\""
+    "$LOG_COMMAND" stream --info --style compact --predicate "subsystem == \"$BUNDLE_ID\""
     ;;
   --verify|verify)
     stop_running_copy
     open_app
-    sleep 1
-    pgrep -x "$APP_NAME" >/dev/null
+    "$SLEEP_COMMAND" 1
+    "$PGREP_COMMAND" -x "$APP_NAME" >/dev/null
     ;;
 esac

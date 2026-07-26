@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 enum ClipboardStorageError: LocalizedError, Equatable {
@@ -8,6 +9,7 @@ enum ClipboardStorageError: LocalizedError, Equatable {
     case tooManyImportedItems
     case duplicateImportedItem
     case invalidImportedItem(String)
+    case importPlanExpired
     case missingImageData
     case incompatibleExport(String)
     case unsupportedTransferVersion(Int)
@@ -31,6 +33,8 @@ enum ClipboardStorageError: LocalizedError, Equatable {
             return "The history file contains duplicate clip identifiers."
         case let .invalidImportedItem(reason):
             return "The history file contains an invalid clip: \(reason)"
+        case .importPlanExpired:
+            return "Clipboard history or import settings changed. Review the import again before applying it."
         case .missingImageData:
             return "An image clip is missing its image data."
         case let .incompatibleExport(reason):
@@ -45,6 +49,11 @@ struct ClipboardImportPreview: Equatable {
     let itemCount: Int
     let textCount: Int
     let imageCount: Int
+}
+
+struct ClipboardThumbnailResult: Sendable {
+    let data: Data
+    let fileName: String
 }
 
 private struct ClipboardTransferDocument: Codable {
@@ -113,9 +122,15 @@ private struct ClipboardTransferItem: Codable {
     }
 }
 
-enum ClipboardStorageFaultPoint {
+enum ClipboardStorageFaultPoint: Equatable {
+    /// Immediately before writing a full-image or thumbnail sidecar.
     case imageWrite
+    /// Immediately after a sidecar has been atomically written.
+    case imageWriteCompleted
+    /// Immediately before staging the next manifest.
     case manifestWrite
+    /// After the complete manifest is staged, immediately before its atomic commit.
+    case manifestWriteCompleted
 }
 
 struct ClipboardStorage: @unchecked Sendable {
@@ -253,6 +268,41 @@ struct ClipboardStorage: @unchecked Sendable {
         return try? Data(contentsOf: url)
     }
 
+    func thumbnailDataRepairingIfNeeded(for item: ClipboardItem) -> ClipboardThumbnailResult? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let image = item.image else {
+            return nil
+        }
+        if let data = image.thumbnailData,
+           ClipboardImageProcessor.isDecodableImage(data) {
+            let fileName = image.thumbnailFileName
+                ?? "\(item.id.uuidString)-thumb-\(ClipboardImageProcessor.contentHash(for: data)).png"
+            return ClipboardThumbnailResult(data: data, fileName: fileName)
+        }
+        if let fileName = image.thumbnailFileName,
+           let url = safeImageURL(for: fileName),
+           let data = try? Data(contentsOf: url),
+           ClipboardImageProcessor.isDecodableImage(data) {
+            return ClipboardThumbnailResult(data: data, fileName: fileName)
+        }
+        guard let fullData = image.data ?? imageData(for: item),
+              let repaired = try? ClipboardImageProcessor.process(
+                ClipboardImageCandidate(data: fullData, isPNG: true)
+              ),
+              let thumbnailData = repaired.thumbnailData else {
+            return nil
+        }
+        let thumbnailHash = ClipboardImageProcessor.contentHash(for: thumbnailData)
+        let fileName = "\(item.id.uuidString)-thumb-\(thumbnailHash).png"
+        guard let url = safeImageURL(for: fileName),
+              (try? writeImageData(thumbnailData, to: url)) != nil else {
+            return nil
+        }
+        return ClipboardThumbnailResult(data: thumbnailData, fileName: fileName)
+    }
+
     func export(_ items: [ClipboardItem], to url: URL) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -367,7 +417,17 @@ struct ClipboardStorage: @unchecked Sendable {
 
         let data = try encoder.encode(items)
         try faultInjector?(.manifestWrite)
-        try data.write(to: fileURL, options: [.atomic])
+        let stagedURL = fileURL
+            .deletingLastPathComponent()
+            .appendingPathComponent(".clipboard-history-\(UUID().uuidString).pending")
+        defer { try? fileManager.removeItem(at: stagedURL) }
+        try data.write(to: stagedURL, options: [.atomic])
+        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: stagedURL.path)
+        try faultInjector?(.manifestWriteCompleted)
+
+        guard rename(stagedURL.path, fileURL.path) == 0 else {
+            throw CocoaError(.fileWriteUnknown)
+        }
 
         try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
     }
@@ -431,7 +491,11 @@ struct ClipboardStorage: @unchecked Sendable {
                     didChange = true
                 }
                 if image.contentHash == nil {
-                    image.contentHash = ClipboardImageProcessor.contentHash(for: fullData)
+                    image.contentHash = (
+                        try? ClipboardImageProcessor.process(
+                            ClipboardImageCandidate(data: fullData, isPNG: true)
+                        ).contentHash
+                    ) ?? ClipboardImageProcessor.contentHash(for: fullData)
                     didChange = true
                 }
                 let thumbnailIsUsable: Bool
@@ -468,31 +532,30 @@ struct ClipboardStorage: @unchecked Sendable {
     }
 
     private func portableItem(_ item: ClipboardItem) throws -> ClipboardItem {
-        guard var image = item.image else {
+        guard let storedImage = item.image else {
             return item
         }
 
         var portable = item
-        image.data = image.data ?? imageData(for: item)
-        guard image.data != nil else {
+        guard let fullData = storedImage.data ?? imageData(for: item) else {
             throw ClipboardStorageError.missingImageData
         }
-
-        if image.thumbnailData == nil,
-           let thumbnailFileName = image.thumbnailFileName,
-           let thumbnailURL = safeImageURL(for: thumbnailFileName) {
-            image.thumbnailData = try? Data(contentsOf: thumbnailURL)
+        do {
+            portable.image = try ClipboardImageProcessor.process(
+                ClipboardImageCandidate(data: fullData, isPNG: true)
+            )
+        } catch {
+            throw ClipboardStorageError.incompatibleExport(
+                "an image clip is not a valid canonical PNG"
+            )
         }
-
-        image.fileName = nil
-        image.thumbnailFileName = nil
-        portable.image = image
         return portable
     }
 
     private func writeImageData(_ data: Data, to url: URL) throws {
         try faultInjector?(.imageWrite)
         try data.write(to: url, options: [.atomic])
+        try faultInjector?(.imageWriteCompleted)
 
         try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
@@ -603,6 +666,16 @@ struct ClipboardStorage: @unchecked Sendable {
     private func validateDomainItemsForExport(_ items: [ClipboardItem]) throws {
         do {
             try validateImportedItems(items)
+            let latestAllowedDate = Date().addingTimeInterval(5 * 60)
+            guard items.allSatisfy({
+                $0.createdAt <= $0.lastCopiedAt
+                    && $0.createdAt <= latestAllowedDate
+                    && $0.lastCopiedAt <= latestAllowedDate
+            }) else {
+                throw ClipboardStorageError.invalidImportedItem(
+                    "timestamps are invalid or too far in the future"
+                )
+            }
         } catch let error as ClipboardStorageError {
             throw ClipboardStorageError.incompatibleExport(error.localizedDescription)
         }
@@ -612,6 +685,27 @@ struct ClipboardStorage: @unchecked Sendable {
         from transfer: ClipboardTransferItem,
         isCurrentFormat: Bool
     ) throws -> ClipboardItem {
+        if isCurrentFormat {
+            guard transfer.id != nil else {
+                throw ClipboardStorageError.invalidImportedItem("the clip identifier is missing")
+            }
+            guard transfer.text != nil else {
+                throw ClipboardStorageError.invalidImportedItem("the clip text field is missing")
+            }
+            guard transfer.contentKind != nil else {
+                throw ClipboardStorageError.invalidImportedItem("the content kind is missing")
+            }
+            guard transfer.createdAt != nil, transfer.lastCopiedAt != nil else {
+                throw ClipboardStorageError.invalidImportedItem("clip timestamps are missing")
+            }
+            guard transfer.isPinned != nil else {
+                throw ClipboardStorageError.invalidImportedItem("the pinned state is missing")
+            }
+            guard transfer.copyCount != nil else {
+                throw ClipboardStorageError.invalidImportedItem("the copy count is missing")
+            }
+        }
+
         let kind: ClipboardContentKind
         if let rawKind = transfer.contentKind {
             guard let decodedKind = ClipboardContentKind(rawValue: rawKind) else {
@@ -628,6 +722,16 @@ struct ClipboardStorage: @unchecked Sendable {
         let createdAt = transfer.createdAt ?? now
         let lastCopiedAt = transfer.lastCopiedAt ?? createdAt
         let copyCount = transfer.copyCount ?? 1
+        if isCurrentFormat {
+            let latestAllowedDate = now.addingTimeInterval(5 * 60)
+            guard createdAt <= lastCopiedAt,
+                  createdAt <= latestAllowedDate,
+                  lastCopiedAt <= latestAllowedDate else {
+                throw ClipboardStorageError.invalidImportedItem(
+                    "timestamps are invalid or too far in the future"
+                )
+            }
+        }
 
         switch kind {
         case .text:
@@ -660,6 +764,18 @@ struct ClipboardStorage: @unchecked Sendable {
                       let height = transferImage.height, height > 0 else {
                     throw ClipboardStorageError.invalidImportedItem(
                         "image dimensions must be positive"
+                    )
+                }
+                guard let byteCount = transferImage.byteCount,
+                      byteCount == data.count else {
+                    throw ClipboardStorageError.invalidImportedItem(
+                        "image byte count does not match its data"
+                    )
+                }
+                guard let contentHash = transferImage.contentHash,
+                      contentHash == ClipboardImageProcessor.contentHash(for: data) else {
+                    throw ClipboardStorageError.invalidImportedItem(
+                        "image content hash does not match its data"
                     )
                 }
             }

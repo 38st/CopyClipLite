@@ -36,13 +36,13 @@ protocol UpdateFeedLoading: Sendable {
     func latestRelease(from url: URL, userAgent: String) async throws -> CopyClipRelease
 }
 
-final class GitHubUpdateFeedLoader: UpdateFeedLoading, @unchecked Sendable {
-    func latestRelease(from url: URL, userAgent: String) async throws -> CopyClipRelease {
-        var request = URLRequest(url: url)
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+protocol UpdateHTTPDataLoading: Sendable {
+    func data(for request: URLRequest) async throws -> (Data, URLResponse)
+}
 
-        let (data, response) = try await withCheckedThrowingContinuation {
+struct URLSessionUpdateHTTPDataLoader: UpdateHTTPDataLoading {
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<(Data, URLResponse), Error>) in
             URLSession.shared.dataTask(with: request) { data, response, error in
                 if let error {
@@ -56,28 +56,64 @@ final class GitHubUpdateFeedLoader: UpdateFeedLoading, @unchecked Sendable {
                 continuation.resume(returning: (data, response))
             }.resume()
         }
+    }
+}
 
+final class GitHubUpdateFeedLoader: UpdateFeedLoading, @unchecked Sendable {
+    private static let releaseAssetName = "CopyClip-Lite-macOS.zip"
+    private let httpLoader: any UpdateHTTPDataLoading
+
+    init(httpLoader: any UpdateHTTPDataLoading = URLSessionUpdateHTTPDataLoader()) {
+        self.httpLoader = httpLoader
+    }
+
+    func latestRelease(from url: URL, userAgent: String) async throws -> CopyClipRelease {
+        var request = URLRequest(url: url)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+
+        let (data, response) = try await httpLoader.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse,
               (200..<300).contains(httpResponse.statusCode) else {
             throw UpdateFeedError.invalidResponse
         }
-        let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
+        let release: GitHubRelease
+        do {
+            release = try JSONDecoder().decode(GitHubRelease.self, from: data)
+        } catch {
+            throw UpdateFeedError.invalidResponse
+        }
         let version = release.tagName.trimmingCharacters(
             in: CharacterSet(charactersIn: "vV")
         )
         guard CopyClipVersion(version) != nil else {
             throw UpdateFeedError.invalidVersion
         }
-        return CopyClipRelease(version: version, url: release.htmlURL)
+        guard let asset = release.assets.first(where: {
+            $0.name == Self.releaseAssetName
+        }) else {
+            throw UpdateFeedError.missingAsset
+        }
+        return CopyClipRelease(version: version, url: asset.downloadURL)
     }
 
     private struct GitHubRelease: Decodable {
         let tagName: String
-        let htmlURL: URL
+        let assets: [GitHubAsset]
 
         enum CodingKeys: String, CodingKey {
             case tagName = "tag_name"
-            case htmlURL = "html_url"
+            case assets
+        }
+    }
+
+    private struct GitHubAsset: Decodable {
+        let name: String
+        let downloadURL: URL
+
+        enum CodingKeys: String, CodingKey {
+            case name
+            case downloadURL = "browser_download_url"
         }
     }
 }
@@ -85,6 +121,7 @@ final class GitHubUpdateFeedLoader: UpdateFeedLoading, @unchecked Sendable {
 enum UpdateFeedError: LocalizedError {
     case invalidResponse
     case invalidVersion
+    case missingAsset
     case unavailable
 
     var errorDescription: String? {
@@ -93,6 +130,8 @@ enum UpdateFeedError: LocalizedError {
             "The update service returned an invalid response. Try again later."
         case .invalidVersion:
             "The update service returned an invalid version."
+        case .missingAsset:
+            "The latest release does not include the macOS app download."
         case .unavailable:
             "No public update channel is configured for this build."
         }

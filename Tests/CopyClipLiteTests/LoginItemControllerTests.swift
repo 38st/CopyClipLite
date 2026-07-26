@@ -79,4 +79,64 @@ final class LoginItemControllerTests: XCTestCase {
         XCTAssertEqual(controller.status, .notRegistered)
         XCTAssertNotNil(controller.errorMessage)
     }
+
+    func testEnabledEnableAndNotRegisteredDisableAreNoOps() {
+        let enabledService = StubLoginItemService(status: .enabled)
+        let enabledController = LoginItemController(service: enabledService)
+        enabledController.setEnabled(true)
+        XCTAssertEqual(enabledService.registerCount, 0)
+        XCTAssertEqual(enabledService.unregisterCount, 0)
+        XCTAssertEqual(enabledController.status, .enabled)
+
+        let offService = StubLoginItemService(status: .notRegistered)
+        let offController = LoginItemController(service: offService)
+        offController.setEnabled(false)
+        XCTAssertEqual(offService.registerCount, 0)
+        XCTAssertEqual(offService.unregisterCount, 0)
+        XCTAssertEqual(offController.status, .notRegistered)
+    }
+
+    func testNotRegisteredEnableRegistersSuccessfully() {
+        let service = StubLoginItemService(status: .notRegistered)
+        let controller = LoginItemController(service: service)
+
+        controller.setEnabled(true)
+
+        XCTAssertEqual(service.registerCount, 1)
+        XCTAssertEqual(controller.status, .enabled)
+        XCTAssertNil(controller.errorMessage)
+    }
+
+    func testUnavailableAndUnknownStatesHaveDeterministicTransitions() {
+        for initialStatus in [LoginItemStatus.notFound, .unknown] {
+            let enableService = StubLoginItemService(status: initialStatus)
+            let enableController = LoginItemController(service: enableService)
+            enableController.setEnabled(true)
+            XCTAssertEqual(enableService.registerCount, 1)
+            XCTAssertEqual(enableController.status, .enabled)
+
+            let disableService = StubLoginItemService(status: initialStatus)
+            let disableController = LoginItemController(service: disableService)
+            disableController.setEnabled(false)
+            XCTAssertEqual(disableService.unregisterCount, 1)
+            XCTAssertEqual(disableController.status, .notRegistered)
+        }
+    }
+
+    func testUnregisterFailurePreservesActualStateAndClearsAfterRecovery() {
+        let service = StubLoginItemService(status: .enabled)
+        service.unregisterError = CocoaError(.fileWriteUnknown)
+        let controller = LoginItemController(service: service)
+
+        controller.setEnabled(false)
+
+        XCTAssertEqual(controller.status, .enabled)
+        XCTAssertNotNil(controller.errorMessage)
+
+        service.unregisterError = nil
+        controller.setEnabled(false)
+
+        XCTAssertEqual(controller.status, .notRegistered)
+        XCTAssertNil(controller.errorMessage)
+    }
 }

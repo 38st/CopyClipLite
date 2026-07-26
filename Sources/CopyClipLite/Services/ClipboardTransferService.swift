@@ -17,6 +17,35 @@ struct ClipboardImportProjection: Sendable, Equatable {
     let finalCount: Int
 }
 
+struct ClipboardImportPlan: Sendable {
+    let artifact: ClipboardImportArtifact
+    let currentItems: [ClipboardItem]
+    let historyLimit: Int
+    let retentionPolicy: ClipboardRetentionPolicy
+    let mergeItems: [ClipboardItem]
+    let mergeProjection: ClipboardImportProjection
+    let replaceItems: [ClipboardItem]
+    let replaceProjection: ClipboardImportProjection
+
+    func candidateItems(for strategy: ClipboardImportStrategy) -> [ClipboardItem] {
+        switch strategy {
+        case .merge:
+            mergeItems
+        case .replace:
+            replaceItems
+        }
+    }
+
+    func projection(for strategy: ClipboardImportStrategy) -> ClipboardImportProjection {
+        switch strategy {
+        case .merge:
+            mergeProjection
+        case .replace:
+            replaceProjection
+        }
+    }
+}
+
 struct ClipboardImportCommit: Sendable {
     let backupURL: URL
     let items: [ClipboardItem]
@@ -64,18 +93,4 @@ actor ClipboardTransferService {
         )
     }
 
-    func commitImport(
-        currentItems: [ClipboardItem],
-        candidateItems: [ClipboardItem]
-    ) throws -> ClipboardImportCommit {
-        try Task.checkCancellation()
-        try storage.saveValidated(currentItems)
-        let backupURL = try storage.backup(currentItems, reason: "pre-import")
-        try Task.checkCancellation()
-        try storage.saveValidated(candidateItems)
-        let loadedItems = try storage.loadResult().get().sorted {
-            $0.lastCopiedAt > $1.lastCopiedAt
-        }
-        return ClipboardImportCommit(backupURL: backupURL, items: loadedItems)
-    }
 }

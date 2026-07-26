@@ -54,6 +54,26 @@ final class GlobalHotkeyControllerTests: XCTestCase {
         XCTAssertEqual(config.validationError, .unsafeModifierCombination)
     }
 
+    func testSingleModifierEditingShortcutIsRejectedButMultiModifierShortcutIsAccepted() {
+        XCTAssertEqual(
+            HotkeyConfig(keyCode: kVK_ANSI_V, modifiers: cmdKey).validationError,
+            .unsafeEditingShortcut
+        )
+        XCTAssertEqual(
+            HotkeyConfig(keyCode: kVK_LeftArrow, modifiers: optionKey).validationError,
+            .unsafeEditingShortcut
+        )
+        XCTAssertNil(
+            HotkeyConfig(
+                keyCode: kVK_ANSI_V,
+                modifiers: cmdKey | optionKey
+            ).validationError
+        )
+        XCTAssertNil(
+            HotkeyConfig(keyCode: kVK_F12, modifiers: controlKey).validationError
+        )
+    }
+
     func testInvalidPersistedShortcutFallsBackToDefault() throws {
         let suiteName = "GlobalHotkeyControllerTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
@@ -78,6 +98,32 @@ final class GlobalHotkeyControllerTests: XCTestCase {
         XCTAssertTrue(controller.isRegistered)
         XCTAssertEqual(registrar.activeConfig, .default)
         XCTAssertNotNil(controller.errorMessage)
+    }
+
+    func testSuccessfulReplacementAndResetEachRegisterExactlyOnce() {
+        let registrar = FakeHotkeyRegistrar()
+        let controller = GlobalHotkeyController(config: .default, registrar: registrar)
+        let replacement = HotkeyConfig(
+            keyCode: kVK_ANSI_B,
+            modifiers: cmdKey | controlKey
+        )
+        let initialAttemptCount = registrar.registrationAttempts.count
+
+        controller.updateConfig(replacement)
+
+        XCTAssertEqual(controller.config, replacement)
+        XCTAssertEqual(
+            registrar.registrationAttempts.count,
+            initialAttemptCount + 1
+        )
+
+        controller.updateConfig(.default)
+
+        XCTAssertEqual(controller.config, .default)
+        XCTAssertEqual(
+            registrar.registrationAttempts.count,
+            initialAttemptCount + 2
+        )
     }
 
     func testHandlerFailurePreventsRegistration() {

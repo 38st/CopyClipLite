@@ -11,9 +11,10 @@ private final class FakePasteTargetApplication: PasteTargetApplication {
     var pasteIsTerminated = false
     var pasteIsActive = false
     var activationResult = true
+    var becomesActiveOnActivation = true
 
     func activateForPaste() -> Bool {
-        if activationResult {
+        if activationResult, becomesActiveOnActivation {
             pasteIsActive = true
         }
         return activationResult
@@ -26,6 +27,8 @@ private final class PasteRuntimeState {
     var hideCount = 0
     var restoreCount = 0
     var simulateCount = 0
+    var simulateResult = true
+    var openSettingsCount = 0
 }
 
 @MainActor
@@ -56,6 +59,14 @@ final class PasteTargetControllerTests: XCTestCase {
         XCTAssertEqual(state.restoreCount, 1)
         XCTAssertEqual(state.simulateCount, 0)
         XCTAssertNotNil(controller.lastError)
+        XCTAssertTrue(controller.lastError?.contains("still on your clipboard") == true)
+        XCTAssertEqual(
+            controller.attemptState,
+            .failed(
+                message: controller.lastError ?? "",
+                clipWasCopied: true
+            )
+        )
     }
 
     func testSuccessfulPasteAttemptUsesVisibleTargetAndStaysHidden() async throws {
@@ -72,6 +83,7 @@ final class PasteTargetControllerTests: XCTestCase {
         XCTAssertEqual(state.restoreCount, 0)
         XCTAssertEqual(state.simulateCount, 1)
         XCTAssertNil(controller.lastError)
+        XCTAssertEqual(controller.attemptState, .postAttempted(target: "Target"))
     }
 
     func testPermissionFailureDoesNotHideOrCopy() throws {
@@ -89,20 +101,93 @@ final class PasteTargetControllerTests: XCTestCase {
         XCTAssertEqual(state.simulateCount, 0)
         XCTAssertEqual(store.items.first?.copyCount, initialCopyCount)
         XCTAssertNotNil(controller.lastError)
+        XCTAssertTrue(controller.lastError?.contains("Nothing was copied") == true)
+    }
+
+    func testActivationTimeoutRestoresUIAndReportsClipboardOutcome() async throws {
+        let target = FakePasteTargetApplication()
+        target.becomesActiveOnActivation = false
+        let state = PasteRuntimeState()
+        let controller = makeController(
+            target: target,
+            state: state,
+            activationPollCount: 2
+        )
+        let (store, item) = try makeStoreAndItem()
+
+        controller.paste(item, using: store)
+        try await Task.sleep(nanoseconds: 30_000_000)
+
+        XCTAssertEqual(state.simulateCount, 0)
+        XCTAssertEqual(state.restoreCount, 1)
+        XCTAssertTrue(controller.lastError?.contains("still on your clipboard") == true)
+    }
+
+    func testNewFailedRequestCancelsOlderPendingPasteWithoutOverwritingItsError() async throws {
+        let target = FakePasteTargetApplication()
+        target.becomesActiveOnActivation = false
+        let state = PasteRuntimeState()
+        let controller = makeController(
+            target: target,
+            state: state,
+            activationPollCount: 20
+        )
+        let (store, item) = try makeStoreAndItem()
+
+        controller.paste(item, using: store)
+        state.permissionGranted = false
+        controller.paste(item, using: store)
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(state.simulateCount, 0)
+        XCTAssertEqual(state.restoreCount, 1)
+        XCTAssertTrue(controller.lastError?.contains("Nothing was copied") == true)
+    }
+
+    func testPasteEventFailureRestoresUIAndReportsCopiedClip() async throws {
+        let target = FakePasteTargetApplication()
+        let state = PasteRuntimeState()
+        state.simulateResult = false
+        let controller = makeController(target: target, state: state)
+        let (store, item) = try makeStoreAndItem()
+
+        controller.paste(item, using: store)
+        try await Task.sleep(nanoseconds: 30_000_000)
+
+        XCTAssertEqual(state.simulateCount, 1)
+        XCTAssertEqual(state.restoreCount, 1)
+        XCTAssertTrue(controller.lastError?.contains("still on your clipboard") == true)
+    }
+
+    func testAccessibilitySettingsActivationDoesNotReplaceRememberedTarget() {
+        let target = FakePasteTargetApplication()
+        let settings = FakePasteTargetApplication()
+        settings.pasteLocalizedName = "System Settings"
+        settings.pasteBundleIdentifier = "com.apple.systempreferences"
+        settings.pasteProcessIdentifier = 99
+        let state = PasteRuntimeState()
+        let controller = makeController(target: target, state: state)
+
+        controller.openAccessibilitySettings()
+        controller.handleActivation(settings)
+
+        XCTAssertEqual(state.openSettingsCount, 1)
+        XCTAssertEqual(controller.targetApplicationName, "Target")
     }
 
     private func makeController(
         target: FakePasteTargetApplication,
-        state: PasteRuntimeState
+        state: PasteRuntimeState,
+        activationPollCount: Int = 1
     ) -> PasteTargetController {
         let runtime = PasteTargetRuntime(
             isAccessibilityGranted: { state.permissionGranted },
             requestAccessibilityPermission: {},
             simulatePaste: {
                 state.simulateCount += 1
-                return true
+                return state.simulateResult
             },
-            openAccessibilitySettings: {},
+            openAccessibilitySettings: { state.openSettingsCount += 1 },
             hideApplication: { state.hideCount += 1 },
             restoreApplication: { state.restoreCount += 1 }
         )
@@ -110,7 +195,7 @@ final class PasteTargetControllerTests: XCTestCase {
             initialTarget: target,
             runtime: runtime,
             observeWorkspace: false,
-            activationPollCount: 1,
+            activationPollCount: activationPollCount,
             activationPollNanoseconds: 1_000_000,
             stabilizationNanoseconds: 0
         )

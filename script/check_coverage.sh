@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MIN_TOTAL="${COPYCLIP_MIN_TOTAL_LINE_COVERAGE:-50}"
+MIN_SOURCE="${COPYCLIP_MIN_SOURCE_LINE_COVERAGE:-35}"
 MIN_STORAGE="${COPYCLIP_MIN_STORAGE_LINE_COVERAGE:-80}"
 MIN_STORE="${COPYCLIP_MIN_STORE_LINE_COVERAGE:-75}"
 
@@ -35,10 +35,17 @@ assert_minimum() {
   echo "$label line coverage: $actual% (minimum $minimum%)"
 }
 
-TOTAL_PERCENT="$(jq -r '.data[0].totals.lines.percent' "$COVERAGE_PATH")"
+SOURCE_PERCENT="$(jq -r '
+  [.data[0].files[]
+    | select((.filename // "") | contains("/Sources/"))
+    | .summary.lines]
+  | (map(.covered) | add // 0) as $covered
+  | (map(.count) | add // 0) as $count
+  | if $count == 0 then 0 else ($covered * 100 / $count) end
+' "$COVERAGE_PATH")"
 STORAGE_PERCENT="$(percentage_for_suffix "Services/ClipboardStorage.swift")"
 STORE_PERCENT="$(percentage_for_suffix "Stores/ClipboardStore.swift")"
 
-assert_minimum "Total" "$TOTAL_PERCENT" "$MIN_TOTAL"
+assert_minimum "Production source" "$SOURCE_PERCENT" "$MIN_SOURCE"
 assert_minimum "ClipboardStorage" "$STORAGE_PERCENT" "$MIN_STORAGE"
 assert_minimum "ClipboardStore" "$STORE_PERCENT" "$MIN_STORE"

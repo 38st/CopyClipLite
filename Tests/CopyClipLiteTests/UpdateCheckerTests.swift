@@ -10,6 +10,24 @@ private struct StubUpdateFeedLoader: UpdateFeedLoading {
     }
 }
 
+private struct StubUpdateHTTPDataLoader: UpdateHTTPDataLoading, @unchecked Sendable {
+    let statusCode: Int
+    let data: Data
+
+    func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+        guard let url = request.url,
+              let response = HTTPURLResponse(
+            url: url,
+            statusCode: statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+              ) else {
+            throw UpdateFeedError.invalidResponse
+        }
+        return (data, response)
+    }
+}
+
 @MainActor
 final class UpdateCheckerTests: XCTestCase {
     func testEquivalentTwoAndThreeComponentVersionsCompareEqual() throws {
@@ -28,20 +46,104 @@ final class UpdateCheckerTests: XCTestCase {
         )
     }
 
-    func testUpdateCheckerReportsAvailableReleaseFromInjectedFeed() async throws {
-        let releaseURL = try XCTUnwrap(URL(string: "https://example.com/releases/1.2.0"))
-        let checker = UpdateChecker(
-            loader: StubUpdateFeedLoader(
-                result: .success(CopyClipRelease(version: "1.2.0", url: releaseURL))
-            ),
-            feedURL: try XCTUnwrap(URL(string: "https://example.com/feed")),
+    func testSuccessfulResponseWithNewerVersionReportsAvailableAsset() async throws {
+        let assetURL = try XCTUnwrap(URL(string: "https://example.com/CopyClip-Lite-macOS.zip"))
+        let checker = try makeHTTPChecker(
+            statusCode: 200,
+            body: releaseJSON(version: "1.2.0", assetURL: assetURL),
             currentVersion: "1.1.0"
         )
 
         checker.check()
         await waitUntilNotChecking(checker)
 
-        XCTAssertEqual(checker.state, .updateAvailable(version: "1.2.0", url: releaseURL))
+        XCTAssertEqual(checker.state, .updateAvailable(version: "1.2.0", url: assetURL))
+    }
+
+    func testSuccessfulResponseWithCurrentVersionReportsUpToDate() async throws {
+        let checker = try makeHTTPChecker(
+            statusCode: 200,
+            body: releaseJSON(version: "1.2.0"),
+            currentVersion: "1.2.0"
+        )
+
+        checker.check()
+        await waitUntilNotChecking(checker)
+
+        XCTAssertEqual(checker.state, .upToDate)
+    }
+
+    func testSuccessfulResponseWithOlderVersionReportsUpToDate() async throws {
+        let checker = try makeHTTPChecker(
+            statusCode: 200,
+            body: releaseJSON(version: "1.1.9"),
+            currentVersion: "1.2.0"
+        )
+
+        checker.check()
+        await waitUntilNotChecking(checker)
+
+        XCTAssertEqual(checker.state, .upToDate)
+    }
+
+    func testNotFoundResponseReportsInvalidResponse() async throws {
+        let checker = try makeHTTPChecker(
+            statusCode: 404,
+            body: #"{"message":"Not Found"}"#,
+            currentVersion: "1.0.0"
+        )
+
+        checker.check()
+        await waitUntilNotChecking(checker)
+
+        assertFailure(checker, contains: "invalid response")
+    }
+
+    func testMalformedJSONReportsInvalidResponse() async throws {
+        let checker = try makeHTTPChecker(
+            statusCode: 200,
+            body: #"{"tag_name":"v1.2.0","assets":"not-an-array"}"#,
+            currentVersion: "1.0.0"
+        )
+
+        checker.check()
+        await waitUntilNotChecking(checker)
+
+        assertFailure(checker, contains: "invalid response")
+    }
+
+    func testMalformedReleaseVersionReportsInvalidVersion() async throws {
+        let checker = try makeHTTPChecker(
+            statusCode: 200,
+            body: releaseJSON(version: "not-a-version"),
+            currentVersion: "1.0.0"
+        )
+
+        checker.check()
+        await waitUntilNotChecking(checker)
+
+        assertFailure(checker, contains: "invalid version")
+    }
+
+    func testReleaseWithoutMacOSAssetReportsMissingAsset() async throws {
+        let checker = try makeHTTPChecker(
+            statusCode: 200,
+            body: """
+            {
+              "tag_name": "v1.2.0",
+              "assets": [{
+                "name": "checksums.txt",
+                "browser_download_url": "https://example.com/checksums.txt"
+              }]
+            }
+            """,
+            currentVersion: "1.0.0"
+        )
+
+        checker.check()
+        await waitUntilNotChecking(checker)
+
+        assertFailure(checker, contains: "does not include the macOS app download")
     }
 
     func testMissingPublicFeedFailsTruthfully() {
@@ -64,5 +166,57 @@ final class UpdateCheckerTests: XCTestCase {
         for _ in 0..<100 where checker.state == .checking {
             await Task.yield()
         }
+    }
+
+    private func makeHTTPChecker(
+        statusCode: Int,
+        body: String,
+        currentVersion: String
+    ) throws -> UpdateChecker {
+        UpdateChecker(
+            loader: GitHubUpdateFeedLoader(
+                httpLoader: StubUpdateHTTPDataLoader(
+                    statusCode: statusCode,
+                    data: Data(body.utf8)
+                )
+            ),
+            feedURL: try XCTUnwrap(URL(string: "https://example.com/releases/latest")),
+            currentVersion: currentVersion
+        )
+    }
+
+    private func releaseJSON(
+        version: String,
+        assetURL: URL? = nil
+    ) -> String {
+        let assetURL = assetURL?.absoluteString
+            ?? "https://example.com/CopyClip-Lite-macOS.zip"
+        return """
+        {
+          "tag_name": "v\(version)",
+          "assets": [{
+            "name": "CopyClip-Lite-macOS.zip",
+            "browser_download_url": "\(assetURL)"
+          }]
+        }
+        """
+    }
+
+    private func assertFailure(
+        _ checker: UpdateChecker,
+        contains expectedText: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        guard case let .failed(message) = checker.state else {
+            XCTFail("Expected failed state, got \(checker.state)", file: file, line: line)
+            return
+        }
+        XCTAssertTrue(
+            message.localizedCaseInsensitiveContains(expectedText),
+            "Expected “\(message)” to contain “\(expectedText)”",
+            file: file,
+            line: line
+        )
     }
 }

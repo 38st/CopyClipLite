@@ -1,5 +1,9 @@
 # CopyClip Lite
 
+[![CI](https://github.com/38st/CopyClipLite/actions/workflows/ci.yml/badge.svg)](https://github.com/38st/CopyClipLite/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/38st/CopyClipLite)](https://github.com/38st/CopyClipLite/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 CopyClip Lite is a lightweight native macOS clipboard history utility. It runs from the menu bar without a Dock icon, watches text and images copied to the system pasteboard, and keeps a small searchable history in Application Support.
 
 ## Features
@@ -56,7 +60,26 @@ Rich text is retained only when a plain-text representation can be extracted, an
 - Apple silicon or Intel Mac (release artifacts are universal)
 - Accessibility permission only when the optional Direct Paste feature is enabled
 
-## Run
+## Install
+
+Download `CopyClip-Lite-macOS.zip` from the
+[latest GitHub release](https://github.com/38st/CopyClipLite/releases/latest),
+extract it, and move **CopyClip Lite.app** to Applications.
+
+Release builds are ad-hoc signed and not notarized. On first launch, macOS may
+require you to Control-click the app, choose **Open**, and confirm.
+
+To build and install directly from source instead:
+
+```bash
+./script/install_app.sh
+```
+
+The installer stages the app, installs it to `/Applications/CopyClip Lite.app`,
+refreshes LaunchServices and Quick Look icon caches, and opens the installed
+app.
+
+## Development
 
 Use the project-local run script:
 
@@ -66,19 +89,19 @@ Use the project-local run script:
 
 The script builds the SwiftPM target, stages `dist/staging.noindex/CopyClip Lite.app`, and launches it as a menu-bar macOS app bundle.
 
-## Install
-
-Use the installer script:
+Run the test suite with:
 
 ```bash
-./script/install_app.sh
+swift test
 ```
 
-The script stages the app, installs it to `/Applications/CopyClip Lite.app`, refreshes LaunchServices and Quick Look icon caches, and opens the installed app.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete validation workflow and
+[the accessibility test matrix](docs/accessibility-testing.md) for manual
+release checks.
 
-## Sharing
+## Releases
 
-Create a validated share zip from the staged bundle:
+Create a validated release ZIP from the staged bundle:
 
 ```bash
 ./script/package_release.sh
@@ -86,14 +109,18 @@ Create a validated share zip from the staged bundle:
 
 The script builds an ad-hoc signed release bundle, validates the bundle plist and signature integrity, writes `dist/CopyClip-Lite-macOS.zip`, reproduces the final ZIP byte-for-byte from the staged app, verifies the ZIP, launch-smoke-tests a fresh extraction, and reports the expected Gatekeeper assessment.
 
-The project does not require an Apple Developer Program account. Its selected release scope is ad-hoc signing rather than Developer ID signing/notarization. macOS may therefore require users to Control-click the app, choose Open, and confirm the first launch. Optional Developer ID distribution remains supported by the packaging script for a future maintainer, but it is not a completion gate.
+The project does not require an Apple Developer Program account. Its selected release scope is ad-hoc signing rather than Developer ID signing/notarization. Optional Developer ID distribution remains supported by the packaging script for a future maintainer.
 
 Published app versions use one `X.Y.Z` grammar, and release tags use the matching `vX.Y.Z` form. Tagged releases run tests and the same ad-hoc package verification through `.github/workflows/release.yml` without Apple secrets. The workflow creates a draft with the Gatekeeper warning, downloads the uploaded ZIP, verifies its SHA-256 against the locally verified artifact, and only then publishes the release. CI validates tests, the release contract, the package, and both `arm64` and `x86_64` slices on every pull request.
 
-Public distribution still requires a public release repository/feed. Local builds intentionally omit the update feed and report that no public channel is configured; the tagged-release workflow embeds the GitHub Releases endpoint in the verified ad-hoc build.
+Local builds intentionally omit the update feed and report that no public
+channel is configured. The tagged-release workflow embeds the GitHub Releases
+endpoint in the verified ad-hoc build.
 
 The production bundle identifier is `io.github.38st.CopyClipLite`. On first launch after upgrading from the former local bundle identifier, CopyClip Lite migrates existing preferences; clipboard history remains in the same Application Support directory.
 
 ## License
 
 CopyClip Lite is available under the [MIT License](LICENSE).
+
+Please report security concerns according to [SECURITY.md](SECURITY.md).

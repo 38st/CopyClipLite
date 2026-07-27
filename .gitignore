@@ -1,3 +1,20 @@
+# macOS metadata
 .DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Swift Package Manager and Xcode
 .build/
+.swiftpm/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+
+# Local release artifacts
 dist/
+
+# Local environment and secret files
+.env
+.env.*
+!.env.example

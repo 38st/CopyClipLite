@@ -2,12 +2,12 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-TASK031_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/copycliplite-task031.XXXXXX")"
+TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/copycliplite-installer-process.XXXXXX")"
 REAL_SWIFT_COMMAND="$(command -v swift)"
 PASS_COUNT=0
 
 cleanup() {
-  rm -rf "$TASK031_ROOT"
+  rm -rf "$TEST_ROOT"
 }
 trap cleanup EXIT
 
@@ -69,7 +69,7 @@ PLIST
   chmod +x "$app_path/Contents/MacOS/CopyClipLite"
 }
 
-STUB_DIR="$TASK031_ROOT/stubs"
+STUB_DIR="$TEST_ROOT/stubs"
 mkdir -p "$STUB_DIR"
 
 cat >"$STUB_DIR/swift-build" <<'STUB'
@@ -157,9 +157,9 @@ ln -s "$STUB_DIR/process-event" "$STUB_DIR/open-build"
 ln -s "$STUB_DIR/install-event" "$STUB_DIR/pkill-install"
 ln -s "$STUB_DIR/install-event" "$STUB_DIR/qlmanage-install"
 
-BUILD_ROOT="$TASK031_ROOT/build-workspace"
-BUILD_BIN="$TASK031_ROOT/build-bin"
-BUILD_LOG="$TASK031_ROOT/build-events.log"
+BUILD_ROOT="$TEST_ROOT/build-workspace"
+BUILD_BIN="$TEST_ROOT/build-bin"
+BUILD_LOG="$TEST_ROOT/build-events.log"
 mkdir -p "$BUILD_ROOT/Sources/CopyClipLite/Resources" "$BUILD_BIN"
 printf 'icon\n' >"$BUILD_ROOT/Sources/CopyClipLite/Resources/CopyClipIcon.icns"
 printf 'logo\n' >"$BUILD_ROOT/Sources/CopyClipLite/Resources/CopyClipLogo.png"
@@ -224,7 +224,7 @@ assert_log_excludes "$BUILD_LOG" "open-build"
 pass "failed run build preserves the running app"
 
 run_atomic_swap_probe() {
-  local probe_root="$TASK031_ROOT/atomic-probe"
+  local probe_root="$TEST_ROOT/atomic-probe"
   mkdir -p "$probe_root/first" "$probe_root/second"
   printf 'old\n' >"$probe_root/first/old"
   printf 'new\n' >"$probe_root/second/new"
@@ -282,7 +282,7 @@ run_install_case() {
     "$REPO_ROOT/script/install_app.sh"
 }
 
-INSTALL_SUCCESS="$TASK031_ROOT/install-success"
+INSTALL_SUCCESS="$TEST_ROOT/install-success"
 prepare_install_case "$INSTALL_SUCCESS" 1
 run_install_case "$INSTALL_SUCCESS" >/dev/null
 SUCCESS_DEST="$INSTALL_SUCCESS/Applications/CopyClip Lite.app"
@@ -297,7 +297,7 @@ install_pkill_line="$(grep -n 'pkill-install' "$INSTALL_SUCCESS/events.log" | cu
 ((install_pkill_line > verify_line)) || fail "installer stopped app before replacement verification"
 pass "successful install atomically replaces the bundle and removes stale files"
 
-INSTALL_BUILD_FAILURE="$TASK031_ROOT/install-build-failure"
+INSTALL_BUILD_FAILURE="$TEST_ROOT/install-build-failure"
 prepare_install_case "$INSTALL_BUILD_FAILURE" 1
 FAIL_INSTALL_BUILD=1
 if run_install_case "$INSTALL_BUILD_FAILURE" >/dev/null 2>&1; then
@@ -308,7 +308,7 @@ assert_file "$INSTALL_BUILD_FAILURE/Applications/CopyClip Lite.app/Contents/old-
 assert_log_excludes "$INSTALL_BUILD_FAILURE/events.log" "pkill-install"
 pass "install build failure preserves the existing app"
 
-INSTALL_COPY_FAILURE="$TASK031_ROOT/install-copy-failure"
+INSTALL_COPY_FAILURE="$TEST_ROOT/install-copy-failure"
 prepare_install_case "$INSTALL_COPY_FAILURE" 1
 FAIL_DITTO=1
 if run_install_case "$INSTALL_COPY_FAILURE" >/dev/null 2>&1; then
@@ -320,7 +320,7 @@ assert_no_install_scratch "$INSTALL_COPY_FAILURE/Applications"
 assert_log_excludes "$INSTALL_COPY_FAILURE/events.log" "pkill-install"
 pass "candidate copy failure preserves the existing app"
 
-INSTALL_CANDIDATE_FAILURE="$TASK031_ROOT/install-candidate-failure"
+INSTALL_CANDIDATE_FAILURE="$TEST_ROOT/install-candidate-failure"
 prepare_install_case "$INSTALL_CANDIDATE_FAILURE" 1
 FAIL_CODESIGN_CALL=1
 if run_install_case "$INSTALL_CANDIDATE_FAILURE" >/dev/null 2>&1; then
@@ -333,7 +333,7 @@ assert_log_excludes "$INSTALL_CANDIDATE_FAILURE/events.log" "atomic-swap"
 assert_log_excludes "$INSTALL_CANDIDATE_FAILURE/events.log" "pkill-install"
 pass "candidate verification failure preserves the existing app"
 
-INSTALL_POST_SWAP_FAILURE="$TASK031_ROOT/install-post-swap-failure"
+INSTALL_POST_SWAP_FAILURE="$TEST_ROOT/install-post-swap-failure"
 prepare_install_case "$INSTALL_POST_SWAP_FAILURE" 1
 FAIL_CODESIGN_CALL=2
 if run_install_case "$INSTALL_POST_SWAP_FAILURE" >/dev/null 2>&1; then
@@ -349,7 +349,7 @@ assert_log_contains "$INSTALL_POST_SWAP_FAILURE/events.log" "atomic-swap-2"
 assert_log_excludes "$INSTALL_POST_SWAP_FAILURE/events.log" "pkill-install"
 pass "post-swap verification failure atomically rolls back the old app"
 
-INSTALL_SWAP_FAILURE="$TASK031_ROOT/install-swap-failure"
+INSTALL_SWAP_FAILURE="$TEST_ROOT/install-swap-failure"
 prepare_install_case "$INSTALL_SWAP_FAILURE" 1
 FAIL_SWAP_CALL=1
 if run_install_case "$INSTALL_SWAP_FAILURE" >/dev/null 2>&1; then
@@ -361,7 +361,7 @@ assert_no_install_scratch "$INSTALL_SWAP_FAILURE/Applications"
 assert_log_excludes "$INSTALL_SWAP_FAILURE/events.log" "pkill-install"
 pass "atomic replacement failure leaves the old app in place"
 
-INSTALL_ROLLBACK_FAILURE="$TASK031_ROOT/install-rollback-failure"
+INSTALL_ROLLBACK_FAILURE="$TEST_ROOT/install-rollback-failure"
 prepare_install_case "$INSTALL_ROLLBACK_FAILURE" 1
 FAIL_CODESIGN_CALL=2
 FAIL_SWAP_CALL=2
@@ -376,11 +376,11 @@ preserved_old="$(find "$INSTALL_ROLLBACK_FAILURE/Applications" \
 assert_log_excludes "$INSTALL_ROLLBACK_FAILURE/events.log" "pkill-install"
 pass "failed automatic rollback preserves the old bundle for recovery"
 
-INSTALL_FRESH="$TASK031_ROOT/install-fresh"
+INSTALL_FRESH="$TEST_ROOT/install-fresh"
 prepare_install_case "$INSTALL_FRESH" 0
 run_install_case "$INSTALL_FRESH" >/dev/null
 assert_file "$INSTALL_FRESH/Applications/CopyClip Lite.app/Contents/new-version"
 assert_no_install_scratch "$INSTALL_FRESH/Applications"
 pass "fresh install moves a verified candidate into place"
 
-echo "TASK-031 harness: $PASS_COUNT checks passed"
+echo "Installer process harness: $PASS_COUNT checks passed"

@@ -5,19 +5,28 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test-and-package:
     runs-on: macos-14
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Validate shell scripts
         run: bash -n script/*.sh script/tests/*.sh
       - name: Run installer process harness
-        run: ./script/tests/task_031_harness.sh
+        run: ./script/tests/installer_process_harness.sh
       - name: Verify release contract
-        run: bash script/tests/task_018_release_harness.sh
+        run: bash script/tests/release_contract_harness.sh
       - name: Run tests
         run: ./script/check_coverage.sh
       - name: Enforce strict concurrency warnings
@@ -32,7 +41,7 @@ jobs:
           ARCHS="$(lipo -archs 'dist/staging.noindex/CopyClip Lite.app/Contents/MacOS/CopyClipLite')"
           [[ "$ARCHS" == *arm64* && "$ARCHS" == *x86_64* ]]
       - name: Upload local validation artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: CopyClip-Lite-local-validation
           path: dist/CopyClip-Lite-macOS.zip

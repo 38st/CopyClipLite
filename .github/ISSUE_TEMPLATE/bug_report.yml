@@ -1,0 +1,62 @@
+name: Bug report
+description: Report a reproducible problem with CopyClip Lite.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve CopyClip Lite. Clipboard contents may be sensitive. Replace copied text, images, paths, app names, and exported history with safe test data before posting.
+  - type: input
+    id: app-version
+    attributes:
+      label: CopyClip Lite version
+      placeholder: "1.0.0"
+    validations:
+      required: true
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version and Mac architecture
+      placeholder: "macOS 15.5, Apple silicon"
+    validations:
+      required: true
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Installation method
+      options:
+        - GitHub release
+        - Built from source
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Use non-sensitive sample clipboard content.
+      placeholder: |
+        1. Copy safe sample text
+        2. Open CopyClip Lite
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Do not attach clipboard-history exports unless they contain only synthetic test data.

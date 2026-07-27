@@ -4,7 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$REPO_ROOT/script/release_contract.sh"
 
-TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/copycliplite-task018.XXXXXX")"
+TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/copycliplite-release-contract.XXXXXX")"
 cleanup() {
   rm -rf "$TEST_ROOT"
 }

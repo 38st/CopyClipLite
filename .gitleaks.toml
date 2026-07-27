@@ -1,0 +1,11 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "UserDefaults migration flag is configuration state, not a credential"
+paths = [
+  '''Sources/CopyClipLite/App/CopyClipLiteApp\.swift''',
+]
+regexes = [
+  '''migrationKey\s*=\s*"didMigrateLegacyDefaultsV1"''',
+]

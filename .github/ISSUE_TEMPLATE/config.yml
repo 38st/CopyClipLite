@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/38st/CopyClipLite/security
+    about: Report security issues privately; do not include sensitive clipboard data in a public issue.

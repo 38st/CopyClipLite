@@ -10,10 +10,12 @@ permissions:
 jobs:
   ad-hoc-release:
     runs-on: macos-14
+    timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Validate release tag and scripts
         run: |
@@ -24,7 +26,7 @@ jobs:
           bash -n script/*.sh script/tests/*.sh
 
       - name: Verify release contract
-        run: bash script/tests/task_018_release_harness.sh
+        run: bash script/tests/release_contract_harness.sh
 
       - name: Test
         run: |

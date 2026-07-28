@@ -598,6 +598,46 @@ final class ClipboardStorageTests: XCTestCase {
         }
     }
 
+    func testCurrentTransferRejectsDuplicateClipIdentifiers() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let duplicateID = "00000000-0000-0000-0000-000000000001"
+
+        XCTAssertThrowsError(
+            try storage.importItems(
+                data: Data(
+                    """
+                    {
+                      "format":"CopyClipLite",
+                      "version":1,
+                      "items":[
+                        {
+                          "id":"\(duplicateID)",
+                          "text":"first",
+                          "contentKind":"text",
+                          "createdAt":0,
+                          "lastCopiedAt":0,
+                          "isPinned":false,
+                          "copyCount":1
+                        },
+                        {
+                          "id":"\(duplicateID)",
+                          "text":"second",
+                          "contentKind":"text",
+                          "createdAt":1,
+                          "lastCopiedAt":1,
+                          "isPinned":false,
+                          "copyCount":1
+                        }
+                      ]
+                    }
+                    """.utf8
+                )
+            )
+        ) { error in
+            XCTAssertEqual(error as? ClipboardStorageError, .duplicateImportedItem)
+        }
+    }
+
     func testValidLegacyRawArrayImportMigratesExplicitDefaults() throws {
         let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
         let imported = try storage.importItems(

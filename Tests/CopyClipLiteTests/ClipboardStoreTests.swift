@@ -2280,7 +2280,7 @@ final class ClipboardStoreTests: XCTestCase {
         XCTAssertEqual(loadedItem.htmlData, htmlData)
     }
 
-    func testImportMergesByDefaultPathAndCreatesPrivateBackup() throws {
+    func testImportMergesByCanonicalPlanAndCreatesPrivateBackup() async throws {
         let directory = try makeTemporaryDirectory()
         let storage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Store"))
         let sourceStorage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Source"))
@@ -2295,11 +2295,13 @@ final class ClipboardStoreTests: XCTestCase {
             sourceApplicationProvider: { nil }
         )
 
-        let backupURL = try store.importHistory(from: importURL, strategy: .merge)
+        let artifact = try await store.prepareImport(from: importURL)
+        let plan = store.importPlan(for: artifact)
+        let commit = try await store.importHistory(plan: plan, strategy: .merge)
 
         XCTAssertEqual(Set(store.items.map(\.text)), ["existing", "imported"])
-        XCTAssertTrue(FileManager.default.fileExists(atPath: backupURL.path))
-        XCTAssertEqual(try permissions(at: backupURL), 0o600)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: commit.backupURL.path))
+        XCTAssertEqual(try permissions(at: commit.backupURL), 0o600)
     }
 
     func testAsyncImportAppliesExactPreviewedArtifactWhenSourceChanges() async throws {

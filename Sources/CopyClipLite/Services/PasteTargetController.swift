@@ -44,7 +44,7 @@ final class PasteTargetActivationObservation: @unchecked Sendable {
 struct PasteTargetRuntime {
     var isAccessibilityGranted: () -> Bool
     var requestAccessibilityPermission: () -> Void
-    var simulatePaste: () -> Bool
+    var simulatePaste: (pid_t) -> Bool
     var openAccessibilitySettings: () -> Void
     var hideApplication: () -> Void
     var restoreApplication: () -> Void
@@ -85,7 +85,7 @@ struct PasteTargetRuntime {
     static let live = PasteTargetRuntime(
         isAccessibilityGranted: { PasteSimulator.isAccessibilityGranted },
         requestAccessibilityPermission: { PasteSimulator.requestAccessibilityPermission() },
-        simulatePaste: { PasteSimulator.simulatePaste() },
+        simulatePaste: { PasteSimulator.simulatePaste(targetProcessIdentifier: $0) },
         openAccessibilitySettings: { PasteSimulator.openAccessibilitySettings() },
         hideApplication: { NSApp.hide(nil) },
         restoreApplication: {
@@ -107,6 +107,11 @@ enum PasteAttemptState: Equatable {
 
 @MainActor
 final class PasteTargetController: ObservableObject {
+    private enum FailureKind {
+        case permission
+        case other
+    }
+
     @Published private(set) var isAccessibilityGranted: Bool
     @Published private(set) var lastError: String?
     @Published private(set) var attemptState: PasteAttemptState = .idle
@@ -117,6 +122,7 @@ final class PasteTargetController: ObservableObject {
     private var pendingPasteOwnsHiddenUI = false
     private var pasteRequestGeneration: UInt64 = 0
     private var isPreservingTargetForSystemSettings = false
+    private var lastFailureKind: FailureKind?
     private let runtime: PasteTargetRuntime
     private let activationTimeoutNanoseconds: UInt64
     private let activationPollNanoseconds: UInt64
@@ -164,8 +170,12 @@ final class PasteTargetController: ObservableObject {
 
     func refreshPermission() {
         isAccessibilityGranted = runtime.isAccessibilityGranted()
-        if isAccessibilityGranted, lastError == Self.permissionError {
+        if isAccessibilityGranted, lastFailureKind == .permission {
             lastError = nil
+            lastFailureKind = nil
+            if case .failed = attemptState {
+                attemptState = .idle
+            }
         }
     }
 
@@ -184,7 +194,12 @@ final class PasteTargetController: ObservableObject {
         attemptState = .preflighting
         refreshPermission()
         guard isAccessibilityGranted else {
-            fail(Self.permissionError, restoreUI: false, clipWasCopied: false)
+            fail(
+                Self.permissionError,
+                restoreUI: false,
+                clipWasCopied: false,
+                kind: .permission
+            )
             return
         }
         guard let target = lastExternalApplication, !target.pasteIsTerminated else {
@@ -208,6 +223,7 @@ final class PasteTargetController: ObservableObject {
         let requestGeneration = pasteRequestGeneration
         let targetName = target.pasteLocalizedName ?? "The destination app"
         lastError = nil
+        lastFailureKind = nil
         attemptState = .activating(target: targetName)
         runtime.hideApplication()
         pendingPasteOwnsHiddenUI = true
@@ -223,83 +239,55 @@ final class PasteTargetController: ObservableObject {
         attemptState = .waitingForTarget(target: targetName)
         pendingPasteTask = Task { @MainActor [weak self, target] in
             guard let self else { return }
-            let deadline = Self.clampedSum(
-                self.runtime.monotonicNanoseconds(),
-                self.activationTimeoutNanoseconds
+            let attempt = PasteAttempt(
+                target: target,
+                runtime: self.runtime,
+                activationTimeoutNanoseconds: self.activationTimeoutNanoseconds,
+                activationPollNanoseconds: self.activationPollNanoseconds,
+                stabilizationNanoseconds: self.stabilizationNanoseconds
             )
-            while !target.pasteIsActive {
-                let now = self.runtime.monotonicNanoseconds()
-                guard now < deadline else { break }
-                let remaining = deadline - now
-                do {
-                    try await self.runtime.sleepNanoseconds(
-                        min(self.activationPollNanoseconds, remaining)
-                    )
-                } catch {
-                    return
+            let outcome = await attempt.run(
+                isCurrent: { [weak self] in
+                    self?.pasteRequestGeneration == requestGeneration
+                },
+                onPosting: { [weak self] in
+                    self?.attemptState = .posting(target: targetName)
                 }
-                guard !Task.isCancelled,
-                      self.pasteRequestGeneration == requestGeneration else {
-                    return
-                }
-            }
-
-            guard target.pasteIsActive else {
+            )
+            guard self.pasteRequestGeneration == requestGeneration else { return }
+            switch outcome {
+            case .cancelled:
+                return
+            case let .failed(message):
                 self.fail(
-                    "The destination app did not become active, so nothing was pasted.",
+                    message,
                     restoreUI: true,
                     clipWasCopied: true
                 )
-                return
-            }
-
-            do {
-                try await self.runtime.sleepNanoseconds(self.stabilizationNanoseconds)
-            } catch {
-                return
-            }
-            guard !Task.isCancelled,
-                  self.pasteRequestGeneration == requestGeneration else {
-                return
-            }
-            guard !target.pasteIsTerminated,
-                  target.pasteIsActive else {
-                self.fail(
-                    "The destination app was no longer ready, so nothing was pasted.",
-                    restoreUI: true,
-                    clipWasCopied: true
-                )
-                return
-            }
-
-            self.refreshPermission()
-            guard self.isAccessibilityGranted else {
+            case .permissionRevoked:
+                self.refreshPermission()
                 self.fail(
                     Self.permissionError,
                     restoreUI: true,
-                    clipWasCopied: true
+                    clipWasCopied: true,
+                    kind: .permission
                 )
-                return
+            case .posted:
+                self.pendingPasteTask = nil
+                self.pendingPasteOwnsHiddenUI = false
+                self.lastError = nil
+                self.lastFailureKind = nil
+                self.attemptState = .postAttempted(target: targetName)
             }
-            self.attemptState = .posting(target: targetName)
-            guard self.runtime.simulatePaste() else {
-                self.fail(
-                    "macOS could not create the paste event.",
-                    restoreUI: true,
-                    clipWasCopied: true
-                )
-                return
-            }
-
-            self.pendingPasteTask = nil
-            self.pendingPasteOwnsHiddenUI = false
-            self.lastError = nil
-            self.attemptState = .postAttempted(target: targetName)
         }
     }
 
     func dismissError() {
         lastError = nil
+        lastFailureKind = nil
+        if case .failed = attemptState {
+            attemptState = .idle
+        }
     }
 
     private func installActivationObserver() {
@@ -346,7 +334,8 @@ final class PasteTargetController: ObservableObject {
     private func fail(
         _ message: String,
         restoreUI: Bool,
-        clipWasCopied: Bool
+        clipWasCopied: Bool,
+        kind: FailureKind = .other
     ) {
         pendingPasteTask?.cancel()
         pendingPasteTask = nil
@@ -355,6 +344,7 @@ final class PasteTargetController: ObservableObject {
             : "Nothing was copied."
         let fullMessage = "\(message) \(outcome)"
         lastError = fullMessage
+        lastFailureKind = kind
         attemptState = .failed(
             message: fullMessage,
             clipWasCopied: clipWasCopied
@@ -374,8 +364,4 @@ final class PasteTargetController: ObservableObject {
         return overflow ? .max : result
     }
 
-    private static func clampedSum(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
-        let (result, overflow) = lhs.addingReportingOverflow(rhs)
-        return overflow ? .max : result
-    }
 }

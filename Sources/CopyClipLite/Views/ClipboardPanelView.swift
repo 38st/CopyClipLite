@@ -1,44 +1,6 @@
 import AppKit
 import SwiftUI
 
-enum ClipboardPanelOrdering {
-    static func displayedItems(_ visibleItems: [ClipboardItem]) -> [ClipboardItem] {
-        visibleItems.filter(\.isPinned) + visibleItems.filter { !$0.isPinned }
-    }
-
-    static func selectionAfterDeleting(
-        deletedID: ClipboardItem.ID,
-        selectedID: ClipboardItem.ID?,
-        before: [ClipboardItem],
-        after: [ClipboardItem]
-    ) -> ClipboardItem.ID? {
-        guard selectedID == deletedID,
-              let deletedIndex = before.firstIndex(where: { $0.id == deletedID }) else {
-            return selectedID.flatMap { selected in
-                after.contains(where: { $0.id == selected }) ? selected : after.first?.id
-            }
-        }
-        guard !after.isEmpty else {
-            return nil
-        }
-        return after[min(deletedIndex, after.count - 1)].id
-    }
-
-    static func selectedPositionChanged(
-        selectedID: ClipboardItem.ID?,
-        beforeIDs: [ClipboardItem.ID],
-        afterIDs: [ClipboardItem.ID]
-    ) -> Bool {
-        guard let selectedID,
-              let oldIndex = beforeIDs.firstIndex(of: selectedID),
-              let newIndex = afterIDs.firstIndex(of: selectedID) else {
-            return false
-        }
-
-        return oldIndex != newIndex
-    }
-}
-
 enum ClipboardPanelPresentationContext: Equatable {
     case menuBar
     case mainWindow
@@ -267,7 +229,7 @@ struct ClipboardPanelView: View {
                 }
                 .onChange(of: selectedItemID) { _, newID in
                     if let newID {
-                        scroll(to: newID, using: proxy)
+                        scroll(to: newID, using: proxy, animated: false)
                     }
                 }
                 .onChange(of: ClipboardPanelOrdering.displayedItems(visible).map(\.id)) { oldIDs, newIDs in
@@ -277,7 +239,7 @@ struct ClipboardPanelView: View {
                            beforeIDs: oldIDs,
                            afterIDs: newIDs
                        ) {
-                        scroll(to: selectedItemID, using: proxy)
+                        scroll(to: selectedItemID, using: proxy, animated: true)
                     }
                 }
             }
@@ -454,20 +416,13 @@ struct ClipboardPanelView: View {
 
     private func moveSelection(by offset: Int) -> Bool {
         let visibleItems = displayedItems()
-        guard !visibleItems.isEmpty else {
-            selectedItemID = nil
-            return false
-        }
-
-        guard let currentSelectionID = selectedItemID,
-              let selectedIndex = visibleItems.firstIndex(where: { $0.id == currentSelectionID }) else {
-            selectedItemID = visibleItems.first?.id
-            return true
-        }
-
-        let nextIndex = min(max(selectedIndex + offset, 0), visibleItems.count - 1)
-        selectedItemID = visibleItems[nextIndex].id
-        return true
+        let nextSelection = ClipboardPanelModel.movedSelection(
+            selectedID: selectedItemID,
+            by: offset,
+            displayedItems: visibleItems
+        )
+        selectedItemID = nextSelection
+        return nextSelection != nil
     }
 
     private func copySelectedItem() -> Bool {
@@ -524,14 +479,10 @@ struct ClipboardPanelView: View {
     }
 
     private func reconcileSelection() {
-        let visibleItems = displayedItems()
-
-        if let selectedItemID,
-           visibleItems.contains(where: { $0.id == selectedItemID }) {
-            return
-        }
-
-        selectedItemID = visibleItems.first?.id
+        selectedItemID = ClipboardPanelModel.reconciledSelection(
+            selectedID: selectedItemID,
+            displayedItems: displayedItems()
+        )
     }
 
     private func displayedItems() -> [ClipboardItem] {
@@ -548,9 +499,10 @@ struct ClipboardPanelView: View {
 
     private func scroll(
         to id: ClipboardItem.ID,
-        using proxy: ScrollViewProxy
+        using proxy: ScrollViewProxy,
+        animated: Bool
     ) {
-        if reduceMotion {
+        if reduceMotion || !animated {
             proxy.scrollTo(id, anchor: .center)
         } else {
             withAnimation {
@@ -605,118 +557,5 @@ struct ClipboardPanelView: View {
         case nil:
             break
         }
-    }
-}
-
-private struct IssueBanner: View {
-    let message: String
-    let dismiss: () -> Void
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-            Text(message)
-                .font(.caption)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 4)
-            Button(action: dismiss) {
-                Image(systemName: "xmark")
-            }
-            .buttonStyle(.borderless)
-            .accessibilityLabel("Dismiss warning")
-        }
-        .padding(8)
-        .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 7))
-    }
-}
-
-private struct SectionHeader: View {
-    let title: String
-
-    var body: some View {
-        Text(title)
-            .font(.caption)
-            .fontWeight(.semibold)
-            .foregroundStyle(.secondary)
-            .textCase(.uppercase)
-            .padding(.horizontal, 4)
-            .padding(.top, 4)
-    }
-}
-
-private enum EmptyHistoryReason {
-    case noHistory
-    case noMatches
-    case noTextClips
-    case noImageClips
-    case noPinnedClips
-
-    var systemImage: String {
-        switch self {
-        case .noHistory:
-            "clipboard"
-        case .noMatches:
-            "magnifyingglass"
-        case .noTextClips:
-            "text.alignleft"
-        case .noImageClips:
-            "photo"
-        case .noPinnedClips:
-            "pin"
-        }
-    }
-
-    var title: String {
-        switch self {
-        case .noHistory:
-            "Copy something to start"
-        case .noMatches:
-            "No matches"
-        case .noTextClips:
-            "No text clips"
-        case .noImageClips:
-            "No image clips"
-        case .noPinnedClips:
-            "No pinned clips"
-        }
-    }
-
-    var message: String {
-        switch self {
-        case .noHistory:
-            "Recent clips will appear here."
-        case .noMatches:
-            "Try a different search or filter."
-        case .noTextClips:
-            "Text clips will appear here."
-        case .noImageClips:
-            "Image clips will appear here."
-        case .noPinnedClips:
-            "Pinned clips will stay at the top."
-        }
-    }
-}
-
-private struct EmptyHistoryView: View {
-    let reason: EmptyHistoryReason
-
-    var body: some View {
-        VStack(spacing: 8) {
-            Image(systemName: reason.systemImage)
-                .font(.system(size: 34))
-                .foregroundStyle(.tertiary)
-
-            Text(reason.title)
-                .font(.callout)
-                .fontWeight(.medium)
-                .foregroundStyle(.secondary)
-
-            Text(reason.message)
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
-        }
-        .padding()
     }
 }

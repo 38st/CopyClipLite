@@ -60,7 +60,7 @@ final class SettingsTransferStateTests: XCTestCase {
         )
         let expectedPlan = store.importPlan(for: expectedArtifact)
         let provider = provider(returning: data)
-        let state = SettingsTransferState()
+        let state = SettingsTransferCoordinator()
 
         state.loadDroppedImport(
             from: provider,
@@ -98,7 +98,7 @@ final class SettingsTransferStateTests: XCTestCase {
             )
             return nil
         }
-        let state = SettingsTransferState()
+        let state = SettingsTransferCoordinator()
 
         state.loadDroppedImport(
             from: provider,
@@ -127,7 +127,7 @@ final class SettingsTransferStateTests: XCTestCase {
             completionBox.store(completion)
             return nil
         }
-        let state = SettingsTransferState()
+        let state = SettingsTransferCoordinator()
 
         state.loadDroppedImport(
             from: provider,

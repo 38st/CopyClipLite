@@ -15,7 +15,10 @@ enum PasteSimulator {
     }
 
     @discardableResult
-    static func simulatePaste() -> Bool {
+    static func simulatePaste(targetProcessIdentifier: pid_t) -> Bool {
+        guard targetProcessIdentifier > 0 else {
+            return false
+        }
         let source = CGEventSource(stateID: .hidSystemState)
 
         let keyDown = CGEvent(
@@ -36,8 +39,8 @@ enum PasteSimulator {
             return false
         }
 
-        keyDown.post(tap: .cghidEventTap)
-        keyUp.post(tap: .cghidEventTap)
+        keyDown.postToPid(targetProcessIdentifier)
+        keyUp.postToPid(targetProcessIdentifier)
         return true
     }
 

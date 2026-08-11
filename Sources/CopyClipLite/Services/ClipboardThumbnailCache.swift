@@ -42,12 +42,14 @@ final class ClipboardThumbnailCache {
             return .unavailable
         }
         loadingIDs.insert(item.id)
+        loadingFingerprints[item.id] = fingerprint
         return .load
     }
 
     func finishLoading(id: ClipboardItem.ID, data: Data?, now: Date) {
         loadingIDs.remove(id)
         guard let data else {
+            loadingFingerprints.removeValue(forKey: id)
             retryAfter[id] = now.addingTimeInterval(retryDelay)
             return
         }
@@ -70,7 +72,6 @@ final class ClipboardThumbnailCache {
         return [
             image.contentHash ?? "",
             image.fileName ?? "",
-            image.thumbnailFileName ?? "",
             String(image.width),
             String(image.height),
             String(image.byteCount),

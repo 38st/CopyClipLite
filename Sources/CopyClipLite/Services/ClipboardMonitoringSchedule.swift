@@ -2,6 +2,7 @@ import Foundation
 
 @MainActor
 final class ClipboardMonitoringSchedule {
+    private static let maximumResumeSleepInterval: TimeInterval = 60
     private let clock: ClipboardStoreClock
     nonisolated(unsafe) private var pollTimer: Timer?
     nonisolated(unsafe) private var pruneTimer: Timer?
@@ -60,20 +61,36 @@ final class ClipboardMonitoringSchedule {
         action: @escaping @MainActor @Sendable () -> Void
     ) {
         cancelResume()
-        let delay = date.timeIntervalSince(clock.now())
-        guard delay > 0 else {
+        guard date > clock.now() else {
             action()
             return
         }
         resumeTask = Task { @MainActor [clock] in
-            try? await clock.sleep(UInt64(delay * 1_000_000_000))
-            guard !Task.isCancelled else { return }
-            action()
+            while !Task.isCancelled {
+                let remaining = date.timeIntervalSince(clock.now())
+                guard remaining > 0 else {
+                    action()
+                    return
+                }
+                let boundedDelay = min(remaining, Self.maximumResumeSleepInterval)
+                let nanoseconds = Self.nanoseconds(for: boundedDelay)
+                do {
+                    try await clock.sleep(nanoseconds)
+                } catch {
+                    return
+                }
+            }
         }
     }
 
     func cancelResume() {
         resumeTask?.cancel()
         resumeTask = nil
+    }
+
+    private static func nanoseconds(for interval: TimeInterval) -> UInt64 {
+        guard interval.isFinite, interval > 0 else { return 0 }
+        let nanoseconds = interval * 1_000_000_000
+        return UInt64(min(nanoseconds, Double(UInt64.max)).rounded(.down))
     }
 }

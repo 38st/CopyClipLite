@@ -26,7 +26,6 @@ final class ClipboardStore: ObservableObject {
         static let clearUnpinnedOnQuit = "clearUnpinnedOnQuit"
         static let monitoringEnabled = "monitoringEnabled"
         static let monitoringPausedUntil = "monitoringPausedUntil"
-        static let ignoredApplications = "ignoredApplications"
         static let directPasteEnabled = "directPasteEnabled"
     }
 
@@ -88,28 +87,31 @@ final class ClipboardStore: ObservableObject {
     @Published private(set) var storageErrorMessage: String?
     @Published private(set) var captureWarning: String?
     @Published private(set) var pasteboardWriteWarning: String?
-    @Published private(set) var isTransferBusy = false
-    @Published private(set) var transferProgressText: String?
-
     private let pasteboard: NSPasteboard
-    private let storage: ClipboardStorage
+    private let storage: any ClipboardStoreRepository
     private let defaults: UserDefaults
+    private let ignoredApplicationStore: ClipboardIgnoredApplicationStore
     private let sourceApplicationProvider: () -> ClipboardSourceApplication?
     private let usesWorkspaceSourceTracking: Bool
     private var lastPasteboardChangeCount: Int
     private var lastActiveApplication: ClipboardSourceApplication?
     private var persistenceBlockedByLoadFailure: Bool
+    private var persistenceLoadFailureMessage: String?
     nonisolated(unsafe) private var workspaceActivationObserver: NotificationObserverToken?
     private var clearCopiedIndicatorTask: Task<Void, Never>?
     private let persistenceCoordinator: ClipboardPersistenceCoordinator
     private let imageCaptureQueue: ClipboardImageCaptureQueue
     private let pasteboardWriter: any ClipboardPasteboardWriting
     private let dragProviderFactory: ClipboardDragProviderFactory
-    private let transferService: ClipboardTransferService
+    private let transferCoordinator: ClipboardStoreTransferCoordinator
     private let clock: ClipboardStoreClock
     private let monitoringSchedule: ClipboardMonitoringSchedule
     private var thumbnailCache = ClipboardThumbnailCache()
     private let thumbnailLoader: @Sendable (ClipboardItem) -> ClipboardThumbnailResult?
+    private var transferObservation: AnyCancellable? = nil
+
+    var isTransferBusy: Bool { transferCoordinator.isBusy }
+    var transferProgressText: String? { transferCoordinator.progressText }
 
     var storageLocation: URL {
         storage.fileURL
@@ -173,21 +175,16 @@ final class ClipboardStore: ObservableObject {
     }
 
     var monitoringStatusText: String {
-        if isMonitoringEnabled {
-            return "Monitoring clipboard"
-        }
-
-        if let monitoringPausedUntil, monitoringPausedUntil > clock.now() {
-            let time = Self.pauseTimeFormatter.string(from: monitoringPausedUntil)
-            return "Paused until \(time)"
-        }
-
-        return "Paused"
+        ClipboardMonitoringPreferences.statusText(
+            isEnabled: isMonitoringEnabled,
+            pausedUntil: monitoringPausedUntil,
+            now: clock.now()
+        )
     }
 
     init(
         pasteboard: NSPasteboard = .general,
-        storage: ClipboardStorage = ClipboardStorage(),
+        storage: any ClipboardStoreRepository = ClipboardStorage(),
         defaults: UserDefaults = .standard,
         sourceApplicationProvider: (() -> ClipboardSourceApplication?)? = nil,
         imageProcessor: any ClipboardImageProcessing = ClipboardImageProcessingService(),
@@ -196,16 +193,22 @@ final class ClipboardStore: ObservableObject {
         clock: ClipboardStoreClock = .live
     ) {
         let loadResult = storage.loadResult()
+        let ignoredApplicationStore = ClipboardIgnoredApplicationStore(defaults: defaults)
         self.pasteboard = pasteboard
         self.storage = storage
         self.defaults = defaults
+        self.ignoredApplicationStore = ignoredApplicationStore
         self.imageCaptureQueue = ClipboardImageCaptureQueue(processor: imageProcessor)
         self.pasteboardWriter = pasteboardWriter ?? SystemClipboardPasteboardWriter(
             pasteboard: pasteboard
         )
         self.dragProviderFactory = ClipboardDragProviderFactory(imageReader: storage)
-        self.persistenceCoordinator = ClipboardPersistenceCoordinator(storage: storage)
-        self.transferService = ClipboardTransferService(storage: storage)
+        let persistenceCoordinator = ClipboardPersistenceCoordinator(storage: storage)
+        self.persistenceCoordinator = persistenceCoordinator
+        self.transferCoordinator = ClipboardStoreTransferCoordinator(
+            transferService: ClipboardTransferService(storage: storage),
+            persistenceCoordinator: persistenceCoordinator
+        )
         self.clock = clock
         self.monitoringSchedule = ClipboardMonitoringSchedule(clock: clock)
         self.thumbnailLoader = thumbnailLoader ?? { storage.thumbnailDataRepairingIfNeeded(for: $0) }
@@ -219,10 +222,12 @@ final class ClipboardStore: ObservableObject {
             self.items = loadedItems.sorted { $0.lastCopiedAt > $1.lastCopiedAt }
             self.storageErrorMessage = nil
             self.persistenceBlockedByLoadFailure = false
+            self.persistenceLoadFailureMessage = nil
         case let .failure(error):
             self.items = []
             self.storageErrorMessage = error.localizedDescription
             self.persistenceBlockedByLoadFailure = true
+            self.persistenceLoadFailureMessage = error.localizedDescription
         }
         self.captureWarning = nil
         let storedHistoryLimit = defaults.object(forKey: DefaultsKey.historyLimit) as? Int
@@ -241,23 +246,17 @@ final class ClipboardStore: ObservableObject {
             ?? false
         self.directPasteEnabled = defaults.object(forKey: DefaultsKey.directPasteEnabled) as? Bool
             ?? false
-        self.ignoredApplications = Self.loadIgnoredApplications(from: defaults)
-        let storedMonitoringEnabled = defaults.object(forKey: DefaultsKey.monitoringEnabled) as? Bool
-            ?? true
-        let storedPausedUntil = defaults.object(forKey: DefaultsKey.monitoringPausedUntil) as? Date
-        if let storedPausedUntil, storedPausedUntil > clock.now() {
-            self.monitoringPausedUntil = storedPausedUntil
-            self.isMonitoringEnabled = false
-        } else if storedPausedUntil != nil {
-            self.monitoringPausedUntil = nil
-            self.isMonitoringEnabled = true
-            defaults.set(true, forKey: DefaultsKey.monitoringEnabled)
-            defaults.removeObject(forKey: DefaultsKey.monitoringPausedUntil)
-        } else {
-            self.monitoringPausedUntil = nil
-            self.isMonitoringEnabled = storedMonitoringEnabled
-        }
+        self.ignoredApplications = ignoredApplicationStore.load()
+        let monitoringState = ClipboardMonitoringPreferences.initialState(
+            defaults: defaults,
+            now: clock.now()
+        )
+        self.monitoringPausedUntil = monitoringState.pausedUntil
+        self.isMonitoringEnabled = monitoringState.isEnabled
         self.lastPasteboardChangeCount = pasteboard.changeCount
+        self.transferObservation = transferCoordinator.objectWillChange.sink { [weak self] in
+            self?.objectWillChange.send()
+        }
 
         let oldItems = items
         pruneHistory()
@@ -346,49 +345,27 @@ final class ClipboardStore: ObservableObject {
     }
 
     func exportHistoryAsync(to url: URL) async throws {
-        guard !isTransferBusy else {
-            throw ClipboardStorageError.persistenceFailed
-        }
-        isTransferBusy = true
-        transferProgressText = "Preparing export…"
         defer {
             discardPasteboardChangesObservedDuringTransfer()
-            isTransferBusy = false
-            transferProgressText = nil
         }
-        let snapshot = items
-        try await transferService.export(snapshot, to: url)
+        try await transferCoordinator.export(items, to: url)
     }
 
     func prepareImport(from url: URL) async throws -> ClipboardImportArtifact {
-        guard !isTransferBusy else {
-            throw ClipboardStorageError.persistenceFailed
-        }
-        isTransferBusy = true
-        transferProgressText = "Validating import…"
         defer {
             discardPasteboardChangesObservedDuringTransfer()
-            isTransferBusy = false
-            transferProgressText = nil
         }
-        return try await transferService.prepareImport(from: url)
+        return try await transferCoordinator.prepareImport(from: url)
     }
 
     func prepareImport(
         data: Data,
         sourceFileName: String
     ) async throws -> ClipboardImportArtifact {
-        guard !isTransferBusy else {
-            throw ClipboardStorageError.persistenceFailed
-        }
-        isTransferBusy = true
-        transferProgressText = "Validating dropped import…"
         defer {
             discardPasteboardChangesObservedDuringTransfer()
-            isTransferBusy = false
-            transferProgressText = nil
         }
-        return try await transferService.prepareImport(
+        return try await transferCoordinator.prepareImport(
             data: data,
             sourceFileName: sourceFileName
         )
@@ -410,38 +387,12 @@ final class ClipboardStore: ObservableObject {
         for artifact: ClipboardImportArtifact,
         now: Date? = nil
     ) -> ClipboardImportPlan {
-        let now = now ?? clock.now()
-        let currentItems = items
-        let mergeBeforePruning = ClipboardHistoryRules.merging(
-            existing: currentItems,
-            imported: artifact.items
-        )
-        let replaceBeforePruning = artifact.items.sorted {
-            $0.lastCopiedAt > $1.lastCopiedAt
-        }
-        let merge = importCandidate(
-            beforePruning: mergeBeforePruning,
-            sourceItemCount: artifact.items.count,
-            addedCount: max(mergeBeforePruning.count - currentItems.count, 0),
-            strategy: .merge,
-            now: now
-        )
-        let replace = importCandidate(
-            beforePruning: replaceBeforePruning,
-            sourceItemCount: artifact.items.count,
-            addedCount: artifact.items.count,
-            strategy: .replace,
-            now: now
-        )
-        return ClipboardImportPlan(
+        ClipboardImportPlanner.plan(
             artifact: artifact,
-            currentItems: currentItems,
-            historyLimit: historyLimit,
+            currentItems: items,
+            policy: historyPolicy,
             retentionPolicy: retentionPolicy,
-            mergeItems: merge.items,
-            mergeProjection: merge.projection,
-            replaceItems: replace.items,
-            replaceProjection: replace.projection
+            now: now ?? clock.now()
         )
     }
 
@@ -461,36 +412,30 @@ final class ClipboardStore: ObservableObject {
         plan: ClipboardImportPlan,
         strategy: ClipboardImportStrategy
     ) async throws -> ClipboardImportCommit {
-        guard !isTransferBusy else {
-            throw ClipboardStorageError.persistenceFailed
-        }
         guard items == plan.currentItems,
               historyLimit == plan.historyLimit,
               retentionPolicy == plan.retentionPolicy else {
             throw ClipboardStorageError.importPlanExpired
         }
 
-        isTransferBusy = true
-        transferProgressText = "Applying import…"
         invalidatePendingImageCaptures()
         invalidatePendingPersist()
         stopMonitoring()
         defer {
             discardPasteboardChangesObservedDuringTransfer()
-            isTransferBusy = false
-            transferProgressText = nil
             if isMonitoringEnabled {
                 startMonitoring()
             }
         }
 
-        let commit = try await persistenceCoordinator.commitImport(
-            currentItems: plan.currentItems,
-            candidateItems: plan.candidateItems(for: strategy)
+        let commit = try await transferCoordinator.commitImport(
+            plan: plan,
+            strategy: strategy
         )
         items = commit.items
         thumbnailCache = ClipboardThumbnailCache()
         persistenceBlockedByLoadFailure = false
+        persistenceLoadFailureMessage = nil
         storageErrorMessage = nil
         return commit
     }
@@ -629,6 +574,10 @@ final class ClipboardStore: ObservableObject {
         monitoringSchedule.stopPolling()
     }
 
+    private func discardPasteboardChangesObservedDuringTransfer() {
+        lastPasteboardChangeCount = pasteboard.changeCount
+    }
+
     private func startPeriodicPruning() {
         monitoringSchedule.startPruning(interval: Self.pruneInterval) { [weak self] in
             self?.pruneHistoryAndPersistIfNeeded()
@@ -743,7 +692,7 @@ final class ClipboardStore: ObservableObject {
 
     @discardableResult
     nonisolated static func clearUnpinnedHistoryOnQuitIfNeeded(
-        storage: ClipboardStorage = ClipboardStorage(),
+        storage: any ClipboardHistoryRepository = ClipboardStorage(),
         defaults: UserDefaults = .standard
     ) -> Bool {
         guard defaults.bool(forKey: DefaultsKey.clearUnpinnedOnQuit) else {
@@ -932,38 +881,20 @@ final class ClipboardStore: ObservableObject {
     }
 
     private func persistIgnoredApplications() {
-        guard let data = try? JSONEncoder().encode(ignoredApplications) else {
-            return
-        }
-
-        defaults.set(data, forKey: DefaultsKey.ignoredApplications)
+        ignoredApplicationStore.save(ignoredApplications)
     }
-
-    private static func loadIgnoredApplications(from defaults: UserDefaults) -> [ClipboardSourceApplication] {
-        guard let data = defaults.data(forKey: DefaultsKey.ignoredApplications),
-              let applications = try? JSONDecoder().decode([ClipboardSourceApplication].self, from: data) else {
-            return []
-        }
-
-        return applications.sorted {
-            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-        }
-    }
-
-    private static let pauseTimeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.timeStyle = .short
-        formatter.dateStyle = .none
-        return formatter
-    }()
 
     private func pruneHistory(now: Date? = nil) {
         let now = now ?? clock.now()
+        let previousIDs = Set(items.map(\.id))
         items = ClipboardHistoryRules.applyingPolicy(
             to: items,
             policy: historyPolicy,
             now: now
         ).items
+        if Set(items.map(\.id)) != previousIDs {
+            thumbnailCache = ClipboardThumbnailCache()
+        }
     }
 
     private func pruneHistoryAndPersistIfNeeded(now: Date? = nil) {
@@ -979,6 +910,10 @@ final class ClipboardStore: ObservableObject {
     }
 
     private func persist() {
+        guard !persistenceBlockedByLoadFailure else {
+            storageErrorMessage = persistenceLoadFailureMessage
+            return
+        }
         let snapshot = items
         persistenceCoordinator.scheduleSave(snapshot) { [weak self] result in
             guard let self else { return }
@@ -995,6 +930,10 @@ final class ClipboardStore: ObservableObject {
     @discardableResult
     func flushPendingPersist() -> Bool {
         invalidatePendingPersist()
+        guard !persistenceBlockedByLoadFailure else {
+            storageErrorMessage = persistenceLoadFailureMessage
+            return false
+        }
         let snapshot = items
         do {
             let persistedItems = try persistenceCoordinator.flush(snapshot)
@@ -1043,36 +982,6 @@ final class ClipboardStore: ObservableObject {
 
     func dismissPasteboardWriteWarning() {
         pasteboardWriteWarning = nil
-    }
-
-    private func importCandidate(
-        beforePruning: [ClipboardItem],
-        sourceItemCount: Int,
-        addedCount: Int,
-        strategy: ClipboardImportStrategy,
-        now: Date
-    ) -> (items: [ClipboardItem], projection: ClipboardImportProjection) {
-        let policyResult = ClipboardHistoryRules.applyingPolicy(
-            to: beforePruning,
-            policy: historyPolicy,
-            now: now
-        )
-        let finalItems = policyResult.items
-        return (
-            finalItems,
-            ClipboardImportProjection(
-                strategy: strategy,
-                sourceItemCount: sourceItemCount,
-                addedCount: addedCount,
-                deduplicatedCount: strategy == .merge
-                    ? max(sourceItemCount - addedCount, 0)
-                    : 0,
-                expiredCount: policyResult.expiredCount,
-                overLimitCount: policyResult.overLimitCount,
-                retainedPinnedCount: finalItems.filter(\.isPinned).count,
-                finalCount: finalItems.count
-            )
-        )
     }
 
     private func clearCopiedIndicator(after id: ClipboardItem.ID) {

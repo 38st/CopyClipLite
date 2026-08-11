@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 struct ClipboardImportArtifact: Sendable {
@@ -52,15 +53,24 @@ struct ClipboardImportCommit: Sendable {
 }
 
 actor ClipboardTransferService {
-    private let storage: ClipboardStorage
+    private let storage: any ClipboardTransferRepository
 
-    init(storage: ClipboardStorage) {
+    init(storage: any ClipboardTransferRepository) {
         self.storage = storage
     }
 
     func export(_ items: [ClipboardItem], to url: URL) throws {
         try Task.checkCancellation()
-        try storage.export(items, to: url)
+        let stagedURL = url.deletingLastPathComponent().appendingPathComponent(
+            ".CopyClipLite-export-\(UUID().uuidString).pending"
+        )
+        defer { try? FileManager.default.removeItem(at: stagedURL) }
+
+        try storage.export(items, to: stagedURL)
+        try Task.checkCancellation()
+        guard rename(stagedURL.path, url.path) == 0 else {
+            throw CocoaError(.fileWriteUnknown)
+        }
     }
 
     func prepareImport(from url: URL) throws -> ClipboardImportArtifact {

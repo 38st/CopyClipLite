@@ -2,12 +2,6 @@ import AppKit
 import Foundation
 import UniformTypeIdentifiers
 
-protocol ClipboardImageReading: Sendable {
-    func imageData(for item: ClipboardItem) -> Data?
-}
-
-extension ClipboardStorage: ClipboardImageReading {}
-
 private final class ClipboardDragDataCompletion: @unchecked Sendable {
     private let completion: (Data?, Error?) -> Void
 
@@ -99,7 +93,7 @@ private final class ClipboardDragFileStager: @unchecked Sendable {
     }
 }
 
-struct ClipboardDragProviderFactory: Sendable {
+struct ClipboardDragProviderFactory {
     private let imageReader: any ClipboardImageReading
     private let fileManager: FileManager
     private let stagingDirectory: URL

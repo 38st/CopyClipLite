@@ -27,6 +27,7 @@ private final class PasteRuntimeState {
     var hideCount = 0
     var restoreCount = 0
     var simulateCount = 0
+    var simulatedProcessIdentifiers: [pid_t] = []
     var simulateResult = true
     var openSettingsCount = 0
 }
@@ -141,6 +142,7 @@ final class PasteTargetControllerTests: XCTestCase {
         XCTAssertEqual(state.hideCount, 1)
         XCTAssertEqual(state.restoreCount, 0)
         XCTAssertEqual(state.simulateCount, 1)
+        XCTAssertEqual(state.simulatedProcessIdentifiers, [target.pasteProcessIdentifier])
         XCTAssertNil(controller.lastError)
         XCTAssertEqual(controller.attemptState, .postAttempted(target: "Target"))
     }
@@ -161,6 +163,53 @@ final class PasteTargetControllerTests: XCTestCase {
         XCTAssertEqual(store.items.first?.copyCount, initialCopyCount)
         XCTAssertNotNil(controller.lastError)
         XCTAssertTrue(controller.lastError?.contains("Nothing was copied") == true)
+    }
+
+    func testGrantedPermissionClearsDecoratedPermissionFailureAndResetsAttempt() throws {
+        let target = FakePasteTargetApplication()
+        let state = PasteRuntimeState()
+        state.permissionGranted = false
+        let controller = makeController(target: target, state: state)
+        let (store, item) = try makeStoreAndItem()
+
+        controller.paste(item, using: store)
+        XCTAssertTrue(controller.lastError?.contains("Nothing was copied") == true)
+        guard case .failed = controller.attemptState else {
+            return XCTFail("Expected permission failure")
+        }
+
+        state.permissionGranted = true
+        controller.refreshPermission()
+
+        XCTAssertTrue(controller.isAccessibilityGranted)
+        XCTAssertNil(controller.lastError)
+        XCTAssertEqual(controller.attemptState, .idle)
+    }
+
+    func testGrantedPermissionClearsFailureFromRevocationDuringAttempt() async throws {
+        let target = FakePasteTargetApplication()
+        let state = PasteRuntimeState()
+        let clock = PasteTestClock()
+        clock.onSleep = { _ in
+            state.permissionGranted = false
+        }
+        let controller = makeController(target: target, state: state, clock: clock)
+        let (store, item) = try makeStoreAndItem()
+
+        controller.paste(item, using: store)
+        await waitForAttemptToSettle(controller)
+
+        XCTAssertFalse(controller.isAccessibilityGranted)
+        XCTAssertEqual(state.simulateCount, 0)
+        XCTAssertEqual(state.restoreCount, 1)
+        XCTAssertTrue(controller.lastError?.contains("still on your clipboard") == true)
+
+        state.permissionGranted = true
+        controller.refreshPermission()
+
+        XCTAssertTrue(controller.isAccessibilityGranted)
+        XCTAssertNil(controller.lastError)
+        XCTAssertEqual(controller.attemptState, .idle)
     }
 
     func testActivationTimeoutRestoresUIAndReportsClipboardOutcome() async throws {
@@ -349,8 +398,9 @@ final class PasteTargetControllerTests: XCTestCase {
         PasteTargetRuntime(
             isAccessibilityGranted: { state.permissionGranted },
             requestAccessibilityPermission: {},
-            simulatePaste: {
+            simulatePaste: { processIdentifier in
                 state.simulateCount += 1
+                state.simulatedProcessIdentifiers.append(processIdentifier)
                 return state.simulateResult
             },
             openAccessibilitySettings: { state.openSettingsCount += 1 },

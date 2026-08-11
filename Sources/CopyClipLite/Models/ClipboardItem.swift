@@ -89,20 +89,85 @@ struct ClipboardImagePayload: Codable, Hashable, Sendable {
 }
 
 struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
+    static let maximumCopyCount = 1_000_000
+
     let id: UUID
-    var text: String
-    var contentKind: ClipboardContentKind
-    var image: ClipboardImagePayload?
-    var rtfData: Data?
-    var htmlData: Data?
+    private var content: ClipboardContent
     var createdAt: Date
     var lastCopiedAt: Date
     var isPinned: Bool
-    var copyCount: Int
+    var copyCount: Int {
+        didSet {
+            copyCount = Self.normalizedCopyCount(copyCount)
+        }
+    }
     var sourceApplication: ClipboardSourceApplication?
 
-    enum CodingKeys: String, CodingKey {
-        case id, text, contentKind, image, rtfData, htmlData, createdAt, lastCopiedAt, isPinned, copyCount, sourceApplication
+    var text: String {
+        get { content.text }
+        set {
+            switch content {
+            case var .text(value):
+                value.text = newValue
+                content = .text(value)
+            case var .image(value):
+                value.associatedText = newValue
+                content = .image(value)
+            }
+        }
+    }
+
+    var contentKind: ClipboardContentKind {
+        content.kind
+    }
+
+    var image: ClipboardImagePayload? {
+        get {
+            guard case let .image(value) = content else { return nil }
+            return value.payload
+        }
+        set {
+            switch (content, newValue) {
+            case let (_, payload?):
+                content = .image(
+                    ClipboardImageContent(associatedText: text, payload: payload)
+                )
+            case let (.image(value), nil):
+                content = .text(
+                    ClipboardTextContent(
+                        text: value.associatedText,
+                        rtfData: nil,
+                        htmlData: nil
+                    )
+                )
+            case (.text, nil):
+                break
+            }
+        }
+    }
+
+    var rtfData: Data? {
+        get {
+            guard case let .text(value) = content else { return nil }
+            return value.rtfData
+        }
+        set {
+            guard case var .text(value) = content else { return }
+            value.rtfData = newValue
+            content = .text(value)
+        }
+    }
+
+    var htmlData: Data? {
+        get {
+            guard case let .text(value) = content else { return nil }
+            return value.htmlData
+        }
+        set {
+            guard case var .text(value) = content else { return }
+            value.htmlData = newValue
+            content = .text(value)
+        }
     }
 
     init(
@@ -117,15 +182,13 @@ struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         sourceApplication: ClipboardSourceApplication? = nil
     ) {
         self.id = id
-        self.text = text
-        self.contentKind = .text
-        self.image = nil
-        self.rtfData = rtfData
-        self.htmlData = htmlData
+        self.content = .text(
+            ClipboardTextContent(text: text, rtfData: rtfData, htmlData: htmlData)
+        )
         self.createdAt = createdAt
         self.lastCopiedAt = lastCopiedAt
         self.isPinned = isPinned
-        self.copyCount = copyCount
+        self.copyCount = Self.normalizedCopyCount(copyCount)
         self.sourceApplication = sourceApplication
     }
 
@@ -140,48 +203,68 @@ struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         sourceApplication: ClipboardSourceApplication? = nil
     ) {
         self.id = id
-        self.text = text
-        self.contentKind = .image
-        self.image = image
-        self.rtfData = nil
-        self.htmlData = nil
+        self.content = .image(
+            ClipboardImageContent(associatedText: text, payload: image)
+        )
         self.createdAt = createdAt
         self.lastCopiedAt = lastCopiedAt
         self.isPinned = isPinned
-        self.copyCount = copyCount
+        self.copyCount = Self.normalizedCopyCount(copyCount)
         self.sourceApplication = sourceApplication
     }
 
     init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
-        text = try c.decodeIfPresent(String.self, forKey: .text) ?? ""
-        image = try c.decodeIfPresent(ClipboardImagePayload.self, forKey: .image)
-        let decodedContentKind = try c.decodeIfPresent(String.self, forKey: .contentKind)
+        let persisted = try PersistedClipboardItem(from: decoder)
+        id = persisted.id ?? UUID()
+        let text = persisted.text ?? ""
+        let image = persisted.image
+        let decodedContentKind = persisted.contentKind
             .flatMap(ClipboardContentKind.init(rawValue:))
-        contentKind = Self.normalizedContentKind(decodedContentKind, image: image)
-        createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? Date()
-        lastCopiedAt = try c.decodeIfPresent(Date.self, forKey: .lastCopiedAt) ?? Date()
-        isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
-        copyCount = try c.decodeIfPresent(Int.self, forKey: .copyCount) ?? 1
-        sourceApplication = try c.decodeIfPresent(ClipboardSourceApplication.self, forKey: .sourceApplication)
-        rtfData = try c.decodeIfPresent(Data.self, forKey: .rtfData)
-        htmlData = try c.decodeIfPresent(Data.self, forKey: .htmlData)
+        switch Self.normalizedContentKind(decodedContentKind, image: image) {
+        case .text:
+            content = .text(
+                ClipboardTextContent(
+                    text: text,
+                    rtfData: persisted.rtfData,
+                    htmlData: persisted.htmlData
+                )
+            )
+        case .image:
+            guard let image else {
+                content = .text(
+                    ClipboardTextContent(
+                        text: text,
+                        rtfData: persisted.rtfData,
+                        htmlData: persisted.htmlData
+                    )
+                )
+                break
+            }
+            content = .image(
+                ClipboardImageContent(associatedText: text, payload: image)
+            )
+        }
+        createdAt = persisted.createdAt ?? Date()
+        lastCopiedAt = persisted.lastCopiedAt ?? Date()
+        isPinned = persisted.isPinned ?? false
+        copyCount = Self.normalizedCopyCount(persisted.copyCount ?? 1)
+        sourceApplication = persisted.sourceApplication
     }
 
     func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(id, forKey: .id)
-        try c.encode(text, forKey: .text)
-        try c.encode(contentKind.rawValue, forKey: .contentKind)
-        try c.encodeIfPresent(image, forKey: .image)
-        try c.encode(createdAt, forKey: .createdAt)
-        try c.encode(lastCopiedAt, forKey: .lastCopiedAt)
-        try c.encode(isPinned, forKey: .isPinned)
-        try c.encode(copyCount, forKey: .copyCount)
-        try c.encodeIfPresent(sourceApplication, forKey: .sourceApplication)
-        try c.encodeIfPresent(rtfData, forKey: .rtfData)
-        try c.encodeIfPresent(htmlData, forKey: .htmlData)
+        try PersistedClipboardItem(
+            id: id,
+            text: text,
+            contentKind: contentKind.rawValue,
+            image: image,
+            rtfData: rtfData,
+            htmlData: htmlData,
+            createdAt: createdAt,
+            lastCopiedAt: lastCopiedAt,
+            isPinned: isPinned,
+            copyCount: copyCount,
+            sourceApplication: sourceApplication
+        ).encode(to: encoder)
     }
 
     var previewText: String {
@@ -247,6 +330,10 @@ struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         return .text
     }
 
+    private static func normalizedCopyCount(_ copyCount: Int) -> Int {
+        min(max(copyCount, 1), maximumCopyCount)
+    }
+
     private static func previewText(
         contentKind: ClipboardContentKind,
         text: String,
@@ -260,4 +347,18 @@ struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
             return textPreview.isEmpty ? "Image" : "Image · \(textPreview)"
         }
     }
+}
+
+private struct PersistedClipboardItem: Codable {
+    let id: UUID?
+    let text: String?
+    let contentKind: String?
+    let image: ClipboardImagePayload?
+    let rtfData: Data?
+    let htmlData: Data?
+    let createdAt: Date?
+    let lastCopiedAt: Date?
+    let isPinned: Bool?
+    let copyCount: Int?
+    let sourceApplication: ClipboardSourceApplication?
 }

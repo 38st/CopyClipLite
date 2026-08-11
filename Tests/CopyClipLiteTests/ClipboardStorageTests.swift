@@ -57,6 +57,109 @@ final class ClipboardStorageTests: XCTestCase {
         XCTAssertEqual(loadedItem.contentKind, .text)
         XCTAssertEqual(loadedItem.text, "legacy clip")
         XCTAssertEqual(loadedItem.previewText, "legacy clip")
+
+        let reloadedItem = try XCTUnwrap(storage.load().first)
+        XCTAssertEqual(reloadedItem, loadedItem)
+        let normalizedHistory = try String(contentsOf: storage.fileURL, encoding: .utf8)
+        for requiredKey in [
+            "contentKind",
+            "createdAt",
+            "lastCopiedAt",
+            "isPinned",
+            "copyCount",
+        ] {
+            XCTAssertTrue(normalizedHistory.contains("\"\(requiredKey)\""))
+        }
+    }
+
+    func testUnreadableHistoryCannotBeOverwrittenByAnEmptyFallback() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let image = ClipboardImagePayload(
+            data: try makePNGData(width: 2, height: 2),
+            width: 2,
+            height: 2
+        )
+        try storage.saveValidated([
+            ClipboardItem(text: "preserve me"),
+            ClipboardItem(image: image),
+        ])
+        let originalManifest = try Data(contentsOf: storage.fileURL)
+        let originalSidecars = Set(
+            try FileManager.default.contentsOfDirectory(atPath: storage.imageDirectoryURL.path)
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o000],
+            ofItemAtPath: storage.fileURL.path
+        )
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: storage.fileURL.path
+            )
+        }
+
+        guard case .failure(.unreadableHistory) = storage.loadResult() else {
+            return XCTFail("Expected unreadable history to protect the committed files")
+        }
+        XCTAssertThrowsError(try storage.saveValidated([]))
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: storage.fileURL.path
+        )
+        XCTAssertEqual(try Data(contentsOf: storage.fileURL), originalManifest)
+        XCTAssertEqual(
+            Set(try FileManager.default.contentsOfDirectory(atPath: storage.imageDirectoryURL.path)),
+            originalSidecars
+        )
+    }
+
+    func testDuplicateLocalIdentifiersAreQuarantinedBeforeStoreReconciliation() throws {
+        let directory = try makeTemporaryDirectory()
+        let storage = ClipboardStorage(appDirectory: directory)
+        let duplicateID = UUID()
+        let data = try JSONEncoder().encode([
+            ClipboardItem(id: duplicateID, text: "first"),
+            ClipboardItem(id: duplicateID, text: "second"),
+        ])
+        try data.write(to: storage.fileURL, options: .atomic)
+
+        guard case let .failure(.invalidHistory(backupFileName)) = storage.loadResult() else {
+            return XCTFail("Expected duplicate identifiers to be treated as invalid history")
+        }
+
+        XCTAssertNotNil(backupFileName)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: storage.fileURL.path))
+        XCTAssertThrowsError(
+            try storage.saveValidated([
+                ClipboardItem(id: duplicateID, text: "first"),
+                ClipboardItem(id: duplicateID, text: "second"),
+            ])
+        )
+    }
+
+    func testCopyCountIsBoundedAndHistoryIncrementsSaturate() throws {
+        var item = ClipboardItem(text: "bounded", copyCount: Int.max)
+        XCTAssertEqual(item.copyCount, ClipboardItem.maximumCopyCount)
+
+        item.copyCount += 1
+        XCTAssertEqual(item.copyCount, ClipboardItem.maximumCopyCount)
+
+        let recorded = ClipboardHistoryRules.recordingText(
+            "bounded",
+            rtfData: nil,
+            htmlData: nil,
+            sourceApplication: nil,
+            capturedAt: Date(),
+            in: [item]
+        )
+        XCTAssertEqual(recorded.first?.copyCount, ClipboardItem.maximumCopyCount)
+
+        let negativeCountJSON = Data(
+            #"{"text":"negative","contentKind":"text","copyCount":-5}"#.utf8
+        )
+        let decoded = try JSONDecoder().decode(ClipboardItem.self, from: negativeCountJSON)
+        XCTAssertEqual(decoded.copyCount, 1)
     }
 
     func testImageItemsRoundTripThroughStorage() throws {
@@ -293,6 +396,11 @@ final class ClipboardStorageTests: XCTestCase {
                 )
             ])
             let committedManifest = try Data(contentsOf: storage.fileURL)
+            let committedSidecars = Set(
+                try FileManager.default.contentsOfDirectory(
+                    atPath: storage.imageDirectoryURL.path
+                )
+            )
 
             controller.point = point
             controller.occurrence = occurrence
@@ -313,6 +421,12 @@ final class ClipboardStorageTests: XCTestCase {
             )
 
             XCTAssertEqual(try Data(contentsOf: storage.fileURL), committedManifest)
+            XCTAssertEqual(
+                Set(try FileManager.default.contentsOfDirectory(
+                    atPath: storage.imageDirectoryURL.path
+                )),
+                committedSidecars
+            )
             let stillCommitted = try XCTUnwrap(storage.load().first)
             XCTAssertEqual(storage.imageData(for: stillCommitted), oldFull)
             XCTAssertEqual(storage.thumbnailData(for: stillCommitted), oldThumbnail)
@@ -657,6 +771,23 @@ final class ClipboardStorageTests: XCTestCase {
             }
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: exportURL.path))
+    }
+
+    func testInternalBackupDoesNotInheritPublicTransferItemLimit() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let items = (0...ClipboardStorage.maximumImportedItems).map { index in
+            ClipboardItem(text: "pinned-\(index)", isPinned: true)
+        }
+
+        let backupURL = try storage.backup(items, reason: "large-history")
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: backupURL.path))
+        XCTAssertEqual(try permissions(at: backupURL), 0o600)
+        let document = try JSONDecoder().decode(
+            ClipboardTransferDocument.self,
+            from: Data(contentsOf: backupURL)
+        )
+        XCTAssertEqual(document.items.count, items.count)
     }
 
     func testNearLimitImageExportRoundTripsAndFirstAggregateOverflowPreservesDestination() throws {

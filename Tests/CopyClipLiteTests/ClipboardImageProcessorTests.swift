@@ -104,6 +104,44 @@ final class ClipboardImageProcessorTests: XCTestCase {
         }
     }
 
+    func testInvalidPreferredRepresentationFallsBackToNextValidImage() throws {
+        let validTIFF = try makeOrientedTIFFData(width: 3, height: 2, orientation: 1)
+        let candidate = ClipboardImageCandidate(
+            sources: [
+                .data(Data("not a png".utf8), isPNG: true),
+                .data(validTIFF, isPNG: false),
+            ]
+        )
+
+        let payload = try ClipboardImageProcessor.process(candidate)
+
+        XCTAssertEqual(payload.width, 3)
+        XCTAssertEqual(payload.height, 2)
+        XCTAssertNotNil(payload.data)
+        XCTAssertNotNil(payload.thumbnailData)
+    }
+
+    func testOversizedFileCandidateIsRejectedBeforeImageDecoding() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CopyClipLite-Oversized-\(UUID().uuidString).png")
+        XCTAssertTrue(FileManager.default.createFile(atPath: url.path, contents: nil))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let handle = try FileHandle(forWritingTo: url)
+        try handle.truncate(atOffset: UInt64(ClipboardImageProcessor.maximumInputBytes + 1))
+        try handle.close()
+
+        XCTAssertThrowsError(
+            try ClipboardImageProcessor.process(
+                ClipboardImageCandidate(sources: [.fileURL(url)])
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ClipboardImageProcessingError,
+                .encodedDataTooLarge
+            )
+        }
+    }
+
     func testMaximumSupportedImageMeetsLatencyAndResidentGrowthBudgets() async throws {
         let side = 4_096
         XCTAssertEqual(side * side, ClipboardImageProcessor.maximumPixelCount)

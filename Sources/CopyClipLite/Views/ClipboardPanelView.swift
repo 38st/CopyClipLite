@@ -29,25 +29,41 @@ struct ClipboardPanelView: View {
         let recent = visible.filter { !$0.isPinned }
 
         return VStack(spacing: 0) {
-            header
+            ClipboardPanelHeader(
+                store: store,
+                showsOpenMainWindowButton: presentationContext.showsOpenMainWindowButton,
+                openMainWindow: openMainWindow
+            )
 
             Divider()
 
-            VStack(spacing: 8) {
-                searchField
-                filterPicker
-                if let displayedIssue {
-                    IssueBanner(message: displayedIssue.message, dismiss: dismissIssue)
-                }
-            }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+            ClipboardPanelSearchControls(
+                searchText: $searchText,
+                contentFilter: $contentFilter,
+                issueMessage: displayedIssue?.message,
+                submit: { _ = copySelectedItem() },
+                dismissIssue: dismissIssue,
+                searchFocus: $isSearchFocused
+            )
 
-            content(visible: visible, pinned: pinned, recent: recent)
+            ClipboardPanelHistoryList(
+                visible: visible,
+                pinned: pinned,
+                recent: recent,
+                emptyReason: emptyHistoryReason,
+                selectedItemID: $selectedItemID,
+                reduceMotion: reduceMotion,
+                row: row
+            )
 
             Divider()
 
-            footer
+            ClipboardPanelFooter(
+                historySummary: store.historySummaryText,
+                clearableItemCount: clearableItemCount,
+                keepPinnedOnClear: store.keepPinnedOnClear,
+                requestClear: { isConfirmingClear = true }
+            )
         }
         .background(.regularMaterial)
         .confirmationDialog(
@@ -82,167 +98,6 @@ struct ClipboardPanelView: View {
         }
         .onChange(of: selectedItemID) { _, newID in
             accessibilityFocusedItemID = newID
-        }
-    }
-
-    private var header: some View {
-        HStack(spacing: 10) {
-            Image(nsImage: NSApplication.shared.applicationIconImage)
-                .resizable()
-                .frame(width: 30, height: 30)
-                .clipShape(RoundedRectangle(cornerRadius: 7))
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text("CopyClip Lite")
-                    .font(.headline)
-
-                Text(store.monitoringStatusText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer()
-
-            if presentationContext.showsOpenMainWindowButton {
-                Button {
-                    openWindow(id: "main")
-                    NSApplication.shared.activate(ignoringOtherApps: true)
-                    NotificationCenter.default.post(name: .copyClipFocusSearch, object: nil)
-                } label: {
-                    Image(systemName: "macwindow")
-                        .frame(width: 22, height: 22)
-                }
-                .buttonStyle(.borderless)
-                .help("Open window")
-                .accessibilityLabel("Open main window")
-            }
-
-            Menu {
-                if store.isMonitoringEnabled {
-                    Button("Pause") {
-                        store.setMonitoringEnabled(false)
-                    }
-                } else {
-                    Button("Resume") {
-                        store.setMonitoringEnabled(true)
-                    }
-                }
-
-                Divider()
-
-                ForEach(ClipboardPauseDuration.allCases) { duration in
-                    Button("Pause \(duration.title)") {
-                        store.pauseMonitoring(for: duration)
-                    }
-                }
-            } label: {
-                Image(systemName: store.isMonitoringEnabled ? "pause.circle" : "play.circle")
-                    .frame(width: 22, height: 22)
-            }
-            .buttonStyle(.borderless)
-            .help("Monitoring")
-            .accessibilityLabel("Monitoring")
-
-            SettingsLink {
-                Image(systemName: "gearshape")
-                    .frame(width: 22, height: 22)
-            }
-            .buttonStyle(.borderless)
-            .help("Settings")
-            .accessibilityLabel("Settings")
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-    }
-
-    private var searchField: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-
-            TextField("Search history", text: $searchText)
-                .textFieldStyle(.plain)
-                .focused($isSearchFocused)
-                .onSubmit {
-                    _ = copySelectedItem()
-                }
-
-            if !searchText.isEmpty {
-                Button {
-                    searchText = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                }
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
-                .help("Clear search")
-                .accessibilityLabel("Clear search")
-            }
-        }
-        .padding(.horizontal, 10)
-        .frame(height: 32)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color(nsColor: .textBackgroundColor).opacity(0.72))
-        )
-    }
-
-    private var filterPicker: some View {
-        Picker("Filter", selection: $contentFilter) {
-            ForEach(ClipboardContentFilter.allCases) { filter in
-                Text(filter.title).tag(filter)
-            }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-    }
-
-    @ViewBuilder
-    private func content(visible: [ClipboardItem], pinned: [ClipboardItem], recent: [ClipboardItem]) -> some View {
-        if visible.isEmpty {
-            EmptyHistoryView(reason: emptyHistoryReason)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
-                        if !pinned.isEmpty {
-                            SectionHeader(title: "Pinned")
-
-                            ForEach(pinned) { item in
-                                row(for: item)
-                            }
-                        }
-
-                        if !recent.isEmpty {
-                            SectionHeader(title: pinned.isEmpty ? "Recent" : "History")
-
-                            ForEach(recent) { item in
-                                row(for: item)
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 12)
-                    .accessibilityElement(children: .contain)
-                    .accessibilityLabel("Clipboard history")
-                }
-                .onChange(of: selectedItemID) { _, newID in
-                    if let newID {
-                        scroll(to: newID, using: proxy, animated: false)
-                    }
-                }
-                .onChange(of: ClipboardPanelOrdering.displayedItems(visible).map(\.id)) { oldIDs, newIDs in
-                    if let selectedItemID,
-                       ClipboardPanelOrdering.selectedPositionChanged(
-                           selectedID: selectedItemID,
-                           beforeIDs: oldIDs,
-                           afterIDs: newIDs
-                       ) {
-                        scroll(to: selectedItemID, using: proxy, animated: true)
-                    }
-                }
-            }
         }
     }
 
@@ -282,44 +137,6 @@ struct ClipboardPanelView: View {
             }
         )
         .accessibilityFocused($accessibilityFocusedItemID, equals: item.id)
-    }
-
-    private var footer: some View {
-        HStack(spacing: 10) {
-            Text(store.historySummaryText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .layoutPriority(1)
-
-            Text("↑↓ · ↩ · ⌘P")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-                .help("Arrow keys select, Return uses a clip, Command-P pins")
-
-            Spacer()
-
-            Button(role: .destructive) {
-                isConfirmingClear = true
-            } label: {
-                Label("Clear", systemImage: "trash")
-            }
-            .disabled(clearableItemCount == 0)
-            .help(clearButtonHelp)
-            .accessibilityLabel(clearButtonAccessibilityLabel)
-
-            Button {
-                NSApplication.shared.terminate(nil)
-            } label: {
-                Label("Quit", systemImage: "power")
-            }
-            .help("Quit CopyClip Lite")
-            .accessibilityLabel("Quit CopyClip Lite")
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
     }
 
     private func ignoreApplicationAction(for item: ClipboardItem) -> (() -> Void)? {
@@ -380,14 +197,6 @@ struct ClipboardPanelView: View {
         }
 
         return store.items.count
-    }
-
-    private var clearButtonHelp: String {
-        store.keepPinnedOnClear ? "Clear unpinned clips" : "Clear all clips"
-    }
-
-    private var clearButtonAccessibilityLabel: String {
-        store.keepPinnedOnClear ? "Clear unpinned clips" : "Clear all clips"
     }
 
     private var clearConfirmationTitle: String {
@@ -497,18 +306,10 @@ struct ClipboardPanelView: View {
         }
     }
 
-    private func scroll(
-        to id: ClipboardItem.ID,
-        using proxy: ScrollViewProxy,
-        animated: Bool
-    ) {
-        if reduceMotion || !animated {
-            proxy.scrollTo(id, anchor: .center)
-        } else {
-            withAnimation {
-                proxy.scrollTo(id, anchor: .center)
-            }
-        }
+    private func openMainWindow() {
+        openWindow(id: "main")
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        NotificationCenter.default.post(name: .copyClipFocusSearch, object: nil)
     }
 
     private enum DisplayedIssue {

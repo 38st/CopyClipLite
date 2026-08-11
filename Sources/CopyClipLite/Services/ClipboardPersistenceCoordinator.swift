@@ -37,14 +37,14 @@ private final class ImportCancellationState: @unchecked Sendable {
 }
 
 final class ClipboardPersistenceCoordinator: @unchecked Sendable {
-    private let storage: ClipboardStorage
+    private let storage: any ClipboardHistoryRepository
     private let queue: DispatchQueue
     private let generation = PersistenceGeneration()
     private let workItemLock = NSLock()
     private var scheduledWorkItem: DispatchWorkItem?
 
     init(
-        storage: ClipboardStorage,
+        storage: any ClipboardHistoryRepository,
         queue: DispatchQueue = DispatchQueue(label: "CopyClipLite.persistence", qos: .utility)
     ) {
         self.storage = storage

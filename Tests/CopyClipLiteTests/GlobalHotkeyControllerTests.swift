@@ -178,6 +178,35 @@ final class GlobalHotkeyControllerTests: XCTestCase {
         XCTAssertNotNil(controller.errorMessage)
     }
 
+    func testReapplyingRegisteredConfigIsNoOpAndClearsPreviousError() {
+        let registrar = FakeHotkeyRegistrar()
+        let controller = GlobalHotkeyController(config: .default, registrar: registrar)
+        let attempted = HotkeyConfig(keyCode: kVK_ANSI_B, modifiers: cmdKey | optionKey)
+        registrar.nextRegistrationResult = .failure(
+            .registration(OSStatus(eventHotKeyExistsErr), shortcut: attempted.displayString)
+        )
+        controller.updateConfig(attempted)
+        let attemptsAfterFailure = registrar.registrationAttempts.count
+
+        controller.updateConfig(.default)
+
+        XCTAssertEqual(registrar.registrationAttempts.count, attemptsAfterFailure)
+        XCTAssertTrue(controller.isRegistered)
+        XCTAssertNil(controller.errorMessage)
+    }
+
+    func testReapplyingCurrentConfigRetriesWhenRegistrationIsMissing() {
+        let registrar = FakeHotkeyRegistrar()
+        let controller = GlobalHotkeyController(config: .default, registrar: registrar)
+        let initialAttemptCount = registrar.registrationAttempts.count
+        registrar.isRegistered = false
+
+        controller.updateConfig(.default)
+
+        XCTAssertEqual(registrar.registrationAttempts.count, initialAttemptCount + 1)
+        XCTAssertTrue(controller.isRegistered)
+    }
+
     func testSuccessfulReplacementAndResetEachRegisterExactlyOnce() {
         let registrar = FakeHotkeyRegistrar()
         let controller = GlobalHotkeyController(config: .default, registrar: registrar)
@@ -228,6 +257,24 @@ final class GlobalHotkeyControllerTests: XCTestCase {
 
         XCTAssertTrue(controller.isRegistered)
         XCTAssertEqual(registrar.activeConfig, .default)
+    }
+
+    func testSuccessfulRecordingResumeClearsPreviousError() {
+        let registrar = FakeHotkeyRegistrar()
+        let controller = GlobalHotkeyController(config: .default, registrar: registrar)
+        let attempted = HotkeyConfig(keyCode: kVK_ANSI_B, modifiers: cmdKey | optionKey)
+        registrar.nextRegistrationResult = .failure(
+            .registration(OSStatus(eventHotKeyExistsErr), shortcut: attempted.displayString)
+        )
+        controller.updateConfig(attempted)
+        XCTAssertNotNil(controller.errorMessage)
+
+        controller.setRecording(true)
+        registrar.nextRegistrationResult = .success(())
+        controller.setRecording(false)
+
+        XCTAssertTrue(controller.isRegistered)
+        XCTAssertNil(controller.errorMessage)
     }
 
     func testRepeatedInjectedRegistrarLifecycleDoesNotCreateRetainCycles() {

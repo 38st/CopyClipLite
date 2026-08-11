@@ -46,6 +46,12 @@ final class UpdateCheckerTests: XCTestCase {
         )
     }
 
+    func testVersionParserRejectsRepeatedAndTrailingVMarkers() {
+        for value in ["vv1.2.3", "VV1.2.3", "vV1.2.3", "1.2.3v", "v1.2.3V"] {
+            XCTAssertNil(CopyClipVersion(value), value)
+        }
+    }
+
     func testSuccessfulResponseWithNewerVersionReportsAvailableAsset() async throws {
         let assetURL = try XCTUnwrap(URL(string: "https://example.com/CopyClip-Lite-macOS.zip"))
         let checker = try makeHTTPChecker(
@@ -123,6 +129,21 @@ final class UpdateCheckerTests: XCTestCase {
         await waitUntilNotChecking(checker)
 
         assertFailure(checker, contains: "invalid version")
+    }
+
+    func testReleaseFeedRejectsRepeatedAndTrailingVMarkers() async throws {
+        for version in ["vv1.2.0", "1.2.0v", "v1.2.0V"] {
+            let checker = try makeHTTPChecker(
+                statusCode: 200,
+                body: releaseJSON(version: version),
+                currentVersion: "1.0.0"
+            )
+
+            checker.check()
+            await waitUntilNotChecking(checker)
+
+            assertFailure(checker, contains: "invalid version")
+        }
     }
 
     func testReleaseWithoutMacOSAssetReportsMissingAsset() async throws {

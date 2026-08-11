@@ -7,7 +7,12 @@ struct CopyClipVersion: Comparable, Equatable, Sendable {
     let patch: Int
 
     init?(_ value: String) {
-        let normalized = value.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
+        let normalized: Substring
+        if value.first == "v" || value.first == "V" {
+            normalized = value.dropFirst()
+        } else {
+            normalized = value[...]
+        }
         let components = normalized.split(separator: ".", omittingEmptySubsequences: false)
         guard (2...3).contains(components.count),
               components.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) }),
@@ -83,9 +88,12 @@ final class GitHubUpdateFeedLoader: UpdateFeedLoading, @unchecked Sendable {
         } catch {
             throw UpdateFeedError.invalidResponse
         }
-        let version = release.tagName.trimmingCharacters(
-            in: CharacterSet(charactersIn: "vV")
-        )
+        let version: String
+        if release.tagName.first == "v" || release.tagName.first == "V" {
+            version = String(release.tagName.dropFirst())
+        } else {
+            version = release.tagName
+        }
         guard CopyClipVersion(version) != nil else {
             throw UpdateFeedError.invalidVersion
         }

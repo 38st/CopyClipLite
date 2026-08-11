@@ -60,7 +60,7 @@ if [[ "$SOURCE_ID" != "$BUNDLE_ID" ]]; then
   exit 3
 fi
 
-if [[ -e "$DEST_APP/Contents/Info.plist" ]]; then
+if [[ -e "$DEST_APP" || -L "$DEST_APP" ]]; then
   EXISTING_ID="$("$PLIST_BUDDY_COMMAND" -c 'Print CFBundleIdentifier' "$DEST_APP/Contents/Info.plist" 2>/dev/null || true)"
   if [[ "$EXISTING_ID" != "$BUNDLE_ID" ]]; then
     echo "Refusing to overwrite $DEST_APP because it belongs to bundle id: ${EXISTING_ID:-unknown}" >&2

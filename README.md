@@ -50,7 +50,7 @@ Image files are stored locally under:
 
 By default, CopyClip Lite keeps up to 50 unpinned clips and auto-clears unpinned clips after 7 days. Pinned clips never auto-clear.
 
-Text clips over 20,000 characters, encoded images over 10 MB, and images over 100 megapixels are skipped with an in-app warning so unexpectedly large clipboard data cannot freeze the interface or exhaust storage.
+Text clips over 20,000 characters, encoded images over 10 MB, and images over approximately 16.8 megapixels are skipped with an in-app warning so unexpectedly large clipboard data cannot freeze the interface or exhaust storage.
 
 Rich text is retained only when a plain-text representation can be extracted, and each optional RTF/HTML representation is capped at 10 MB. Image copy-back requires PNG; macOS may synthesize additional representations for destination compatibility without CopyClip eagerly decoding a TIFF on the main thread.
 
@@ -94,6 +94,8 @@ Run the test suite with:
 ```bash
 swift test
 ```
+
+The complete coverage check also requires `jq` (`brew install jq`).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete validation workflow and
 [the accessibility test matrix](docs/accessibility-testing.md) for manual

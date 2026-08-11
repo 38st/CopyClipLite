@@ -190,6 +190,12 @@ final class GlobalHotkeyController: ObservableObject {
 
     func updateConfig(_ newConfig: HotkeyConfig) {
         guard let validationError = newConfig.validationError else {
+            if newConfig == config, registrar.isRegistered {
+                newConfig.save()
+                isRegistered = true
+                errorMessage = nil
+                return
+            }
             applyRegistration(of: newConfig, persist: true)
             return
         }
@@ -206,6 +212,7 @@ final class GlobalHotkeyController: ObservableObject {
         switch registrar.resume() {
         case .success:
             isRegistered = registrar.isRegistered
+            errorMessage = nil
         case let .failure(error):
             isRegistered = false
             errorMessage = error.localizedDescription

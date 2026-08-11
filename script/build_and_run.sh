@@ -17,7 +17,33 @@ source "$SCRIPT_DIR/release_contract.sh"
 APP_NAME="CopyClipLite"
 APP_DISPLAY_NAME="${COPYCLIP_APP_DISPLAY_NAME:-CopyClip Lite}"
 BUNDLE_ID="${COPYCLIP_BUNDLE_ID:-io.github.38st.CopyClipLite}"
-GIT_VERSION="$(git -C "$ROOT_DIR" describe --tags --match 'v[0-9]*' --abbrev=0 2>/dev/null | sed 's/^v//' || true)"
+
+discover_git_version() {
+  local best_distance=""
+  local best_version=""
+  local distance
+  local tag
+  local version
+
+  while IFS= read -r tag; do
+    version="${tag#v}"
+    if [[ "$tag" != "v$version" ]] || ! copyclip_is_release_version "$version"; then
+      continue
+    fi
+    distance="$(git -C "$ROOT_DIR" rev-list --count "$tag..HEAD" 2>/dev/null || true)"
+    if [[ ! "$distance" =~ ^[0-9]+$ ]]; then
+      continue
+    fi
+    if [[ -z "$best_distance" || "$distance" -lt "$best_distance" ]]; then
+      best_distance="$distance"
+      best_version="$version"
+    fi
+  done < <(git -C "$ROOT_DIR" tag --merged HEAD --sort=-version:refname 2>/dev/null || true)
+
+  printf '%s' "$best_version"
+}
+
+GIT_VERSION="$(discover_git_version)"
 APP_VERSION="${COPYCLIP_VERSION:-${GIT_VERSION:-1.0.0}}"
 APP_BUILD_NUMBER="${COPYCLIP_BUILD_NUMBER:-$(git -C "$ROOT_DIR" rev-list --count HEAD)}"
 UPDATE_FEED_URL="${COPYCLIP_UPDATE_FEED_URL:-}"

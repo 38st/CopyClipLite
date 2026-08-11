@@ -14,7 +14,13 @@ struct ClipboardPanelKeyInput {
     let keyCode: UInt16
     let charactersIgnoringModifiers: String?
     let modifierFlags: NSEvent.ModifierFlags
-    let isEditingText: Bool
+    let focusContext: ClipboardPanelKeyFocusContext
+}
+
+enum ClipboardPanelKeyFocusContext: Equatable {
+    case list
+    case textEditor
+    case control
 }
 
 enum ClipboardPanelKeyRouting {
@@ -27,9 +33,14 @@ enum ClipboardPanelKeyRouting {
                 keyCode: event.keyCode,
                 charactersIgnoringModifiers: event.charactersIgnoringModifiers,
                 modifierFlags: event.modifierFlags,
-                isEditingText: firstResponder is NSTextView
+                focusContext: focusContext(for: firstResponder)
             )
         )
+    }
+
+    private static func focusContext(for firstResponder: NSResponder?) -> ClipboardPanelKeyFocusContext {
+        guard let firstResponder else { return .list }
+        return firstResponder is NSTextView ? .textEditor : .control
     }
 
     static func action(for input: ClipboardPanelKeyInput) -> ClipboardPanelKeyAction? {
@@ -54,6 +65,10 @@ enum ClipboardPanelKeyRouting {
             return nil
         }
 
+        guard input.focusContext != .control else {
+            return nil
+        }
+
         switch input.keyCode {
         case 125:
             return .moveDown
@@ -61,14 +76,8 @@ enum ClipboardPanelKeyRouting {
             return .moveUp
         case 36, 76:
             return .copySelected
-        case 51, 117:
-            return input.isEditingText ? nil : .deleteSelected
         default:
-            guard !input.isEditingText,
-                  input.charactersIgnoringModifiers?.lowercased() == "p" else {
-                return nil
-            }
-            return .togglePinSelected
+            return nil
         }
     }
 

@@ -77,9 +77,6 @@ final class ClipboardPanelKeyboardBridgeTests: XCTestCase {
             (UInt16(kVK_UpArrow), nil, [], .moveUp),
             (UInt16(kVK_Return), nil, [], .copySelected),
             (UInt16(kVK_ANSI_KeypadEnter), nil, [], .copySelected),
-            (UInt16(kVK_Delete), nil, [], .deleteSelected),
-            (UInt16(kVK_ForwardDelete), nil, [], .deleteSelected),
-            (UInt16(kVK_ANSI_P), "p", [], .togglePinSelected),
             (UInt16(kVK_ANSI_F), "f", .command, .focusSearch),
             (UInt16(kVK_ANSI_P), "p", .command, .togglePinSelected),
             (UInt16(kVK_Delete), nil, .command, .deleteSelected),
@@ -125,6 +122,24 @@ final class ClipboardPanelKeyboardBridgeTests: XCTestCase {
         )
     }
 
+    func testUnmodifiedPinAndDeleteAreNotPanelCommandsOutsideTextEditing() {
+        XCTAssertNil(
+            ClipboardPanelKeyRouting.action(
+                for: input(keyCode: UInt16(kVK_ANSI_P), characters: "p")
+            )
+        )
+        XCTAssertNil(
+            ClipboardPanelKeyRouting.action(
+                for: input(keyCode: UInt16(kVK_Delete))
+            )
+        )
+        XCTAssertNil(
+            ClipboardPanelKeyRouting.action(
+                for: input(keyCode: UInt16(kVK_ForwardDelete))
+            )
+        )
+    }
+
     func testTextEditingStillAllowsListNavigationUseAndExplicitCommands() {
         let cases: [(UInt16, String?, NSEvent.ModifierFlags, ClipboardPanelKeyAction)] = [
             (UInt16(kVK_DownArrow), nil, [], .moveDown),
@@ -146,6 +161,56 @@ final class ClipboardPanelKeyboardBridgeTests: XCTestCase {
                         modifiers: modifiers,
                         isEditingText: true
                     )
+                ),
+                expectedAction
+            )
+        }
+    }
+
+    func testFocusedNonTextControlKeepsStandardUnmodifiedKeys() throws {
+        let button = NSButton(title: "Clear", target: nil, action: nil)
+        let cases: [(UInt16, String?)] = [
+            (UInt16(kVK_DownArrow), nil),
+            (UInt16(kVK_UpArrow), nil),
+            (UInt16(kVK_Return), nil),
+            (UInt16(kVK_ANSI_KeypadEnter), nil),
+            (UInt16(kVK_Delete), nil),
+            (UInt16(kVK_ForwardDelete), nil),
+            (UInt16(kVK_ANSI_P), "p"),
+        ]
+
+        for (keyCode, characters) in cases {
+            let event = try keyEvent(
+                keyCode: keyCode,
+                characters: characters ?? ""
+            )
+            XCTAssertNil(
+                ClipboardPanelKeyRouting.action(
+                    for: event,
+                    firstResponder: button
+                )
+            )
+        }
+    }
+
+    func testFocusedNonTextControlStillAllowsDocumentedCommandShortcuts() throws {
+        let button = NSButton(title: "Clear", target: nil, action: nil)
+        let cases: [(UInt16, String, ClipboardPanelKeyAction)] = [
+            (UInt16(kVK_ANSI_F), "f", .focusSearch),
+            (UInt16(kVK_ANSI_P), "p", .togglePinSelected),
+            (UInt16(kVK_Delete), "\u{8}", .deleteSelected),
+        ]
+
+        for (keyCode, characters, expectedAction) in cases {
+            let event = try keyEvent(
+                keyCode: keyCode,
+                characters: characters,
+                modifiers: .command
+            )
+            XCTAssertEqual(
+                ClipboardPanelKeyRouting.action(
+                    for: event,
+                    firstResponder: button
                 ),
                 expectedAction
             )
@@ -241,13 +306,16 @@ final class ClipboardPanelKeyboardBridgeTests: XCTestCase {
         keyCode: UInt16,
         characters: String? = nil,
         modifiers: NSEvent.ModifierFlags = [],
-        isEditingText: Bool = false
+        isEditingText: Bool = false,
+        preservesFocusedControlKeys: Bool = false
     ) -> ClipboardPanelKeyInput {
         ClipboardPanelKeyInput(
             keyCode: keyCode,
             charactersIgnoringModifiers: characters,
             modifierFlags: modifiers,
-            isEditingText: isEditingText
+            focusContext: preservesFocusedControlKeys
+                ? .control
+                : (isEditingText ? .textEditor : .list)
         )
     }
 

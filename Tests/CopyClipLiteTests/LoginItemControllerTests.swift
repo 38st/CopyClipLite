@@ -139,4 +139,18 @@ final class LoginItemControllerTests: XCTestCase {
         XCTAssertEqual(controller.status, .notRegistered)
         XCTAssertNil(controller.errorMessage)
     }
+
+    func testRefreshClearsFailureAfterExternalStateRecovery() {
+        let service = StubLoginItemService(status: .notRegistered)
+        service.registerError = CocoaError(.fileWriteUnknown)
+        let controller = LoginItemController(service: service)
+        controller.setEnabled(true)
+        XCTAssertNotNil(controller.errorMessage)
+
+        service.status = .enabled
+        controller.refresh()
+
+        XCTAssertEqual(controller.status, .enabled)
+        XCTAssertNil(controller.errorMessage)
+    }
 }

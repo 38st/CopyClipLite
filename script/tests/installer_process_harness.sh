@@ -165,6 +165,20 @@ printf 'icon\n' >"$BUILD_ROOT/Sources/CopyClipLite/Resources/CopyClipIcon.icns"
 printf 'logo\n' >"$BUILD_ROOT/Sources/CopyClipLite/Resources/CopyClipLogo.png"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$BUILD_BIN/CopyClipLite"
 chmod +x "$BUILD_BIN/CopyClipLite"
+/usr/bin/git -C "$BUILD_ROOT" init -q
+/usr/bin/git -C "$BUILD_ROOT" add .
+/usr/bin/git -C "$BUILD_ROOT" \
+  -c user.name='CopyClip Lite Tests' \
+  -c user.email='copycliplite-tests@example.invalid' \
+  commit -qm 'valid release tag fixture'
+/usr/bin/git -C "$BUILD_ROOT" tag v1.2.3
+printf 'newer malformed tag fixture\n' >"$BUILD_ROOT/malformed-tag-fixture"
+/usr/bin/git -C "$BUILD_ROOT" add malformed-tag-fixture
+/usr/bin/git -C "$BUILD_ROOT" \
+  -c user.name='CopyClip Lite Tests' \
+  -c user.email='copycliplite-tests@example.invalid' \
+  commit -qm 'newer malformed release tag fixture'
+/usr/bin/git -C "$BUILD_ROOT" tag v9broken
 
 run_build_script() {
   env \
@@ -175,6 +189,19 @@ run_build_script() {
     COPYCLIP_ROOT_DIR="$BUILD_ROOT" \
     COPYCLIP_VERSION="1.2.3" \
     COPYCLIP_BUILD_NUMBER="17" \
+    COPYCLIP_PKILL_COMMAND="$STUB_DIR/pkill-build" \
+    COPYCLIP_OPEN_COMMAND="$STUB_DIR/open-build" \
+    "$REPO_ROOT/script/build_and_run.sh" "$@"
+}
+
+run_build_script_with_discovered_version() {
+  env \
+    PATH="$STUB_DIR:/usr/bin:/bin:/usr/sbin:/sbin" \
+    EVENT_LOG="$BUILD_LOG" \
+    FAKE_BINARY_DIR="$BUILD_BIN" \
+    COPYCLIP_VERSION="" \
+    COPYCLIP_BUILD_NUMBER="17" \
+    COPYCLIP_ROOT_DIR="$BUILD_ROOT" \
     COPYCLIP_PKILL_COMMAND="$STUB_DIR/pkill-build" \
     COPYCLIP_OPEN_COMMAND="$STUB_DIR/open-build" \
     "$REPO_ROOT/script/build_and_run.sh" "$@"
@@ -193,6 +220,15 @@ assert_log_contains "$BUILD_LOG" "swift build -c release --arch arm64 --arch x86
 assert_log_excludes "$BUILD_LOG" "pkill-build"
 assert_log_excludes "$BUILD_LOG" "open-build"
 pass "package mode builds without stopping or opening the app"
+
+: >"$BUILD_LOG"
+run_build_script_with_discovered_version package >/dev/null
+DISCOVERED_VERSION="$(/usr/libexec/PlistBuddy \
+  -c 'Print CFBundleShortVersionString' \
+  "$BUILD_ROOT/dist/staging.noindex/CopyClip Lite.app/Contents/Info.plist")"
+[[ "$DISCOVERED_VERSION" == "1.2.3" ]] \
+  || fail "exact release tag discovery selected: $DISCOVERED_VERSION"
+pass "build version discovery ignores a nearer malformed v-prefixed tag"
 
 : >"$BUILD_LOG"
 FAIL_SWIFT_BUILD=1
@@ -382,5 +418,53 @@ run_install_case "$INSTALL_FRESH" >/dev/null
 assert_file "$INSTALL_FRESH/Applications/CopyClip Lite.app/Contents/new-version"
 assert_no_install_scratch "$INSTALL_FRESH/Applications"
 pass "fresh install moves a verified candidate into place"
+
+INSTALL_PLISTLESS="$TEST_ROOT/install-plistless-target"
+prepare_install_case "$INSTALL_PLISTLESS" 1
+rm "$INSTALL_PLISTLESS/Applications/CopyClip Lite.app/Contents/Info.plist"
+if run_install_case "$INSTALL_PLISTLESS" >/dev/null 2>&1; then
+  fail "installer unexpectedly replaced a plist-less target"
+fi
+assert_file "$INSTALL_PLISTLESS/Applications/CopyClip Lite.app/Contents/old-version"
+assert_no_install_scratch "$INSTALL_PLISTLESS/Applications"
+assert_log_excludes "$INSTALL_PLISTLESS/events.log" "atomic-swap"
+pass "installer preserves and refuses a plist-less existing target"
+
+INSTALL_MALFORMED="$TEST_ROOT/install-malformed-target"
+prepare_install_case "$INSTALL_MALFORMED" 1
+printf 'not a plist\n' >"$INSTALL_MALFORMED/Applications/CopyClip Lite.app/Contents/Info.plist"
+if run_install_case "$INSTALL_MALFORMED" >/dev/null 2>&1; then
+  fail "installer unexpectedly replaced a malformed target"
+fi
+assert_file "$INSTALL_MALFORMED/Applications/CopyClip Lite.app/Contents/old-version"
+assert_no_install_scratch "$INSTALL_MALFORMED/Applications"
+assert_log_excludes "$INSTALL_MALFORMED/events.log" "atomic-swap"
+pass "installer preserves and refuses a malformed existing target"
+
+INSTALL_MISMATCH="$TEST_ROOT/install-mismatched-target"
+prepare_install_case "$INSTALL_MISMATCH" 1
+/usr/libexec/PlistBuddy \
+  -c 'Set CFBundleIdentifier example.invalid.UnrelatedApp' \
+  "$INSTALL_MISMATCH/Applications/CopyClip Lite.app/Contents/Info.plist"
+if run_install_case "$INSTALL_MISMATCH" >/dev/null 2>&1; then
+  fail "installer unexpectedly replaced a mismatched app"
+fi
+assert_file "$INSTALL_MISMATCH/Applications/CopyClip Lite.app/Contents/old-version"
+assert_no_install_scratch "$INSTALL_MISMATCH/Applications"
+assert_log_excludes "$INSTALL_MISMATCH/events.log" "atomic-swap"
+pass "installer preserves and refuses an app with another bundle identifier"
+
+INSTALL_DANGLING="$TEST_ROOT/install-dangling-target"
+prepare_install_case "$INSTALL_DANGLING" 0
+ln -s "$INSTALL_DANGLING/missing-app" \
+  "$INSTALL_DANGLING/Applications/CopyClip Lite.app"
+if run_install_case "$INSTALL_DANGLING" >/dev/null 2>&1; then
+  fail "installer unexpectedly replaced a dangling target symlink"
+fi
+[[ -L "$INSTALL_DANGLING/Applications/CopyClip Lite.app" ]] \
+  || fail "installer did not preserve dangling target symlink"
+assert_no_install_scratch "$INSTALL_DANGLING/Applications"
+assert_log_excludes "$INSTALL_DANGLING/events.log" "atomic-swap"
+pass "installer preserves and refuses a dangling target symlink"
 
 echo "Installer process harness: $PASS_COUNT checks passed"

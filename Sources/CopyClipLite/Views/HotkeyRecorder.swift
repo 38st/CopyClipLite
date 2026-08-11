@@ -29,8 +29,13 @@ struct HotkeyRecorder: NSViewRepresentable {
 
     func updateNSView(_ nsView: HotkeyRecorderView, context: Context) {
         nsView.config = config
+        nsView.onChange = onChange
         nsView.onRecordingChanged = onRecordingChanged
         nsView.refreshLabel()
+    }
+
+    static func dismantleNSView(_ nsView: HotkeyRecorderView, coordinator: Void) {
+        nsView.cancelRecording()
     }
 }
 
@@ -65,6 +70,39 @@ final class HotkeyRecorderView: NSButton {
 
     override var canBecomeKeyView: Bool { true }
 
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if let window {
+            NotificationCenter.default.removeObserver(
+                self,
+                name: NSWindow.willCloseNotification,
+                object: window
+            )
+            NotificationCenter.default.removeObserver(
+                self,
+                name: NSWindow.didResignKeyNotification,
+                object: window
+            )
+        }
+        if newWindow == nil {
+            cancelRecording()
+        }
+        super.viewWillMove(toWindow: newWindow)
+        if let newWindow {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(hostingWindowWillClose(_:)),
+                name: NSWindow.willCloseNotification,
+                object: newWindow
+            )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(hostingWindowDidResignKey(_:)),
+                name: NSWindow.didResignKeyNotification,
+                object: newWindow
+            )
+        }
+    }
+
     @objc private func beginRecording() {
         isRecording = true
         title = "Press a key combination…"
@@ -98,13 +136,20 @@ final class HotkeyRecorderView: NSButton {
 
         guard modifiers != 0 else {
             NSSound.beep()
+            showValidationError(
+                visibleMessage: "Add ⌘, ⌥, or ⌃",
+                accessibilityMessage: "Add Command, Option, or Control to the shortcut."
+            )
             return
         }
 
         let newConfig = HotkeyConfig(keyCode: keyCode, modifiers: modifiers)
         if let validationError = newConfig.validationError {
             NSSound.beep()
-            setAccessibilityValue(validationError.localizedDescription)
+            showValidationError(
+                visibleMessage: visibleMessage(for: validationError),
+                accessibilityMessage: validationError.localizedDescription
+            )
             return
         }
 
@@ -118,7 +163,20 @@ final class HotkeyRecorderView: NSButton {
             return
         }
         title = config.displayString
+        toolTip = nil
         setAccessibilityValue(config.displayString)
+    }
+
+    func cancelRecording() {
+        finishRecording()
+    }
+
+    @objc private func hostingWindowWillClose(_ notification: Notification) {
+        cancelRecording()
+    }
+
+    @objc private func hostingWindowDidResignKey(_ notification: Notification) {
+        cancelRecording()
     }
 
     private func finishRecording() {
@@ -126,5 +184,30 @@ final class HotkeyRecorderView: NSButton {
         isRecording = false
         refreshLabel()
         onRecordingChanged?(false)
+    }
+
+    private func showValidationError(
+        visibleMessage: String,
+        accessibilityMessage: String
+    ) {
+        title = visibleMessage
+        toolTip = accessibilityMessage
+        setAccessibilityValue(accessibilityMessage)
+        NSAccessibility.post(element: self, notification: .valueChanged)
+    }
+
+    private func visibleMessage(for error: HotkeyConfigValidationError) -> String {
+        switch error {
+        case .keyCodeOutOfRange:
+            "Choose another key"
+        case .unsupportedModifiers:
+            "Choose supported modifiers"
+        case .unsafeModifierCombination:
+            "Add ⌘, ⌥, or ⌃"
+        case .unsafeEditingShortcut:
+            "Add another modifier"
+        case .unsafeSystemShortcut:
+            "Reserved — try another"
+        }
     }
 }

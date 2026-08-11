@@ -28,9 +28,12 @@ jobs:
       - name: Verify release contract
         run: bash script/tests/release_contract_harness.sh
 
+      - name: Run installer process harness
+        run: ./script/tests/installer_process_harness.sh
+
       - name: Test
         run: |
-          swift test
+          ./script/check_coverage.sh
           swift build -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
 
       - name: Build and verify ad-hoc release

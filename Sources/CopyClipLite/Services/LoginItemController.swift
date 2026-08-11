@@ -76,7 +76,11 @@ final class LoginItemController: ObservableObject {
     }
 
     func refresh() {
-        status = service.status
+        let refreshedStatus = service.status
+        if refreshedStatus != status {
+            errorMessage = nil
+        }
+        status = refreshedStatus
     }
 
     func setEnabled(_ shouldEnable: Bool) {

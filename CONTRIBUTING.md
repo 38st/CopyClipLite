@@ -14,8 +14,9 @@ public issue tracker.
 
 ## Development setup
 
-CopyClip Lite requires macOS 14 or later and Xcode Command Line Tools with
-Swift 5.9 or later.
+CopyClip Lite requires macOS 14 or later, Xcode Command Line Tools with
+Swift 5.9 or later, and `jq` for coverage-report validation. Install `jq` with
+`brew install jq` if it is not already available.
 
 ```bash
 swift test

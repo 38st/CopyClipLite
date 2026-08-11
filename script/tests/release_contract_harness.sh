@@ -63,5 +63,9 @@ grep -q 'COPYCLIP_CODESIGN_IDENTITY=-' "$RELEASE_WORKFLOW" \
   || fail "tagged release workflow does not select ad-hoc signing explicitly"
 grep -q 'not notarized' "$RELEASE_WORKFLOW" \
   || fail "tagged release notes do not disclose the Gatekeeper limitation"
+grep -q './script/tests/installer_process_harness.sh' "$RELEASE_WORKFLOW" \
+  || fail "tagged release workflow does not run the installer process gate"
+grep -q './script/check_coverage.sh' "$RELEASE_WORKFLOW" \
+  || fail "tagged release workflow does not enforce coverage gates"
 
-echo "PASS: one X.Y.Z release grammar, reproducible ZIP, and Apple-account-free release workflow"
+echo "PASS: release grammar, reproducible ZIP, validation parity, and Apple-account-free workflow"

@@ -29,12 +29,18 @@ struct ClipboardLinkContent: Hashable, Sendable {
         url.isFileURL ? url.path : url.absoluteString
     }
 
-    /// The filename for a file URL, or the host for a web link.
+    /// The containing folder for a file URL, or the host for a web link. The file's
+    /// own name is already the clip's title, so repeating it here would say nothing.
     var subtitle: String? {
-        if url.isFileURL {
-            return url.lastPathComponent.isEmpty ? nil : url.lastPathComponent
+        guard url.isFileURL else { return url.host }
+        let folder = url.deletingLastPathComponent().path
+        guard !folder.isEmpty, folder != "/" else { return folder.isEmpty ? nil : "/" }
+        let home = NSHomeDirectory()
+        if folder == home { return "~" }
+        if folder.hasPrefix(home + "/") {
+            return "~" + folder.dropFirst(home.count)
         }
-        return url.host
+        return folder
     }
 }
 

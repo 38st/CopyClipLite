@@ -18,7 +18,7 @@ final class ClipboardLinkClipTests: XCTestCase {
         XCTAssertTrue(link.isFileURL)
         XCTAssertEqual(link.url, fileURL)
         XCTAssertEqual(link.title, "quarterly-report.pdf")
-        XCTAssertEqual(link.subtitle, "quarterly-report.pdf")
+        XCTAssertEqual(link.subtitle, "/Users/someone/Documents")
         XCTAssertEqual(link.displayText, "/Users/someone/Documents/quarterly-report.pdf")
     }
 

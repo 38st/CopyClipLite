@@ -17,7 +17,7 @@ No account, no sync, no analytics — your clipboard never leaves your Mac.
 
 <br>
 
-<img src="docs/images/panel.png" width="420" alt="The CopyClip Lite panel showing a pinned clip above recent clipboard history, with a search field and All/Text/Images/Pinned filters">
+<img src="docs/images/panel.png" width="420" alt="The CopyClip Lite panel showing a pinned clip above recent history, including a link clip and a file clip, with All/Text/Images/Links/Pinned filters">
 
 </div>
 

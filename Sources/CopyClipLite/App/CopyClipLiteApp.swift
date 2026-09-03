@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     override convenience init() {
         LegacyDefaultsMigrator.migrateIfNeeded()
         self.init(
+            store: CopyClipAppRuntime.store,
             hasCompletedWelcome: {
                 UserDefaults.standard.bool(forKey: "hasCompletedWelcome")
             },
@@ -41,11 +42,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     init(
+        store: ClipboardStore? = nil,
         hasCompletedWelcome: @escaping @MainActor () -> Bool,
         applyAccessoryActivationPolicy: @escaping @MainActor () -> Void,
         activateApplication: @escaping @MainActor () -> Void,
         cleanupWithoutStore: @escaping @MainActor () -> Void
     ) {
+        self.store = store
         self.hasCompletedWelcome = hasCompletedWelcome
         self.applyAccessoryActivationPolicy = applyAccessoryActivationPolicy
         self.activateApplication = activateApplication
@@ -83,7 +86,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillResignActive(_ notification: Notification) {
-        store?.flushPendingPersist()
+        guard let store else { return }
+        Task { await store.flushPendingPersist() }
     }
 
     func consumeInitialWindowSuppression() -> Bool {
@@ -102,7 +106,7 @@ struct CopyClipLiteApp: App {
 
     init() {
         LegacyDefaultsMigrator.migrateIfNeeded()
-        _store = StateObject(wrappedValue: ClipboardStore())
+        _store = StateObject(wrappedValue: CopyClipAppRuntime.store)
         _loginItemController = StateObject(wrappedValue: LoginItemController())
         _hotkeyController = StateObject(wrappedValue: GlobalHotkeyController())
         _pasteTargetController = StateObject(wrappedValue: PasteTargetController())
@@ -116,7 +120,6 @@ struct CopyClipLiteApp: App {
                 hotkeyController: hotkeyController
             )
                 .frame(minWidth: 390, idealWidth: 420, minHeight: 560, idealHeight: 620)
-                .onAppear { appDelegate.store = store }
                 .background(
                     InitialWindowSuppressor {
                         appDelegate.consumeInitialWindowSuppression()
@@ -154,6 +157,14 @@ struct CopyClipLiteApp: App {
             )
         }
     }
+}
+
+@MainActor
+private enum CopyClipAppRuntime {
+    static let store: ClipboardStore = {
+        LegacyDefaultsMigrator.migrateIfNeeded()
+        return ClipboardStore()
+    }()
 }
 
 private struct InitialWindowSuppressor: NSViewRepresentable {

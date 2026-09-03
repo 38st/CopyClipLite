@@ -54,17 +54,30 @@ struct ClipboardImportCommit: Sendable {
 
 actor ClipboardTransferService {
     private let storage: any ClipboardTransferRepository
+    private let fileManager: FileManager
 
-    init(storage: any ClipboardTransferRepository) {
+    init(
+        storage: any ClipboardTransferRepository,
+        fileManager: FileManager = .default
+    ) {
         self.storage = storage
+        self.fileManager = fileManager
     }
 
     func export(_ items: [ClipboardItem], to url: URL) throws {
         try Task.checkCancellation()
-        let stagedURL = url.deletingLastPathComponent().appendingPathComponent(
-            ".CopyClipLite-export-\(UUID().uuidString).pending"
+        let stagingDirectory = try fileManager.url(
+            for: .itemReplacementDirectory,
+            in: .userDomainMask,
+            appropriateFor: url,
+            create: true
         )
-        defer { try? FileManager.default.removeItem(at: stagedURL) }
+        try? fileManager.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: stagingDirectory.path
+        )
+        defer { try? fileManager.removeItem(at: stagingDirectory) }
+        let stagedURL = stagingDirectory.appendingPathComponent("history.pending")
 
         try storage.export(items, to: stagedURL)
         try Task.checkCancellation()

@@ -84,6 +84,7 @@ extension ClipboardStoreTests {
         XCTAssertEqual(Set(store.items.map(\.text)), ["existing", "imported"])
         XCTAssertTrue(FileManager.default.fileExists(atPath: commit.backupURL.path))
         XCTAssertEqual(try permissions(at: commit.backupURL), 0o600)
+        XCTAssertEqual(store.backupInventory.count, 1)
     }
 
     func testAsyncImportAppliesExactPreviewedArtifactWhenSourceChanges() async throws {
@@ -316,7 +317,7 @@ extension ClipboardStoreTests {
         try await assertPendingPersistCannotOverwriteImport(strategy: .replace)
     }
 
-    func testFailedDeletePersistKeepsPreviouslyCommittedImageReadable() throws {
+    func testFailedDeletePersistKeepsPreviouslyCommittedImageReadable() async throws {
         final class FaultSwitch {
             var failManifestWrite = false
         }
@@ -344,7 +345,7 @@ extension ClipboardStoreTests {
         let imageItem = try XCTUnwrap(store.items.first(where: { $0.isImage }))
         faultSwitch.failManifestWrite = true
 
-        store.delete(imageItem)
+        await store.delete(imageItem)
 
         XCTAssertNotNil(store.storageErrorMessage)
         let committedImage = try XCTUnwrap(storage.load().first(where: { $0.isImage }))

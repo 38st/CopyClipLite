@@ -1,8 +1,13 @@
 import Foundation
 
+struct ClipboardThumbnailLoad: Equatable, Sendable {
+    let id: UUID
+    let fingerprint: String
+}
+
 enum ClipboardThumbnailLookup {
     case data(Data)
-    case load
+    case load(ClipboardThumbnailLoad)
     case unavailable
 }
 
@@ -17,7 +22,7 @@ final class ClipboardThumbnailCache {
     private let retryDelay: TimeInterval
     private var entriesByID: [ClipboardItem.ID: Entry] = [:]
     private var order: [ClipboardItem.ID] = []
-    private var loadingIDs: Set<ClipboardItem.ID> = []
+    private var loadingByID: [ClipboardItem.ID: ClipboardThumbnailLoad] = [:]
     private var retryAfter: [ClipboardItem.ID: Date] = [:]
 
     init(capacity: Int = 100, retryDelay: TimeInterval = 5) {
@@ -37,27 +42,31 @@ final class ClipboardThumbnailCache {
             entriesByID.removeValue(forKey: item.id)
             order.removeAll { $0 == item.id }
         }
-        guard !loadingIDs.contains(item.id),
+        guard loadingByID[item.id] == nil,
               retryAfter[item.id, default: .distantPast] <= now else {
             return .unavailable
         }
-        loadingIDs.insert(item.id)
-        loadingFingerprints[item.id] = fingerprint
-        return .load
+        let load = ClipboardThumbnailLoad(id: UUID(), fingerprint: fingerprint)
+        loadingByID[item.id] = load
+        return .load(load)
     }
 
-    func finishLoading(id: ClipboardItem.ID, data: Data?, now: Date) {
-        loadingIDs.remove(id)
+    func finishLoading(
+        id: ClipboardItem.ID,
+        load: ClipboardThumbnailLoad,
+        data: Data?,
+        now: Date
+    ) {
+        guard loadingByID[id] == load else { return }
+        loadingByID.removeValue(forKey: id)
         guard let data else {
-            loadingFingerprints.removeValue(forKey: id)
             retryAfter[id] = now.addingTimeInterval(retryDelay)
             return
         }
         retryAfter.removeValue(forKey: id)
         // The fingerprint is captured when lookup starts. If the item changes
         // before completion, the next lookup rejects this stale entry.
-        let fingerprint = loadingFingerprints.removeValue(forKey: id) ?? ""
-        entriesByID[id] = Entry(fingerprint: fingerprint, data: data)
+        entriesByID[id] = Entry(fingerprint: load.fingerprint, data: data)
         order.removeAll { $0 == id }
         order.append(id)
         while order.count > capacity {
@@ -65,7 +74,15 @@ final class ClipboardThumbnailCache {
         }
     }
 
-    private var loadingFingerprints: [ClipboardItem.ID: String] = [:]
+    func invalidate(ids: Set<ClipboardItem.ID>) {
+        guard !ids.isEmpty else { return }
+        for id in ids {
+            entriesByID.removeValue(forKey: id)
+            loadingByID.removeValue(forKey: id)
+            retryAfter.removeValue(forKey: id)
+        }
+        order.removeAll { ids.contains($0) }
+    }
 
     private func fingerprint(for item: ClipboardItem) -> String {
         guard let image = item.image else { return "not-an-image" }

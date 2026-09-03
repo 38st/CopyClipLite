@@ -41,7 +41,7 @@ final class ApplicationLifecycleTests: XCTestCase {
         XCTAssertFalse(delegate.consumeInitialWindowSuppression())
     }
 
-    func testResigningActiveFlushesPendingStoreMutation() throws {
+    func testResigningActiveFlushesPendingStoreMutation() async throws {
         let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
         let defaults = makeDefaults()
         defaults.set(false, forKey: "monitoringEnabled")
@@ -53,15 +53,17 @@ final class ApplicationLifecycleTests: XCTestCase {
             sourceApplicationProvider: { nil }
         )
         let item = try XCTUnwrap(store.items.first)
-        store.delete(item)
-        let delegate = makeDelegate(hasCompletedWelcome: true)
-        delegate.store = store
+        store.togglePin(item)
+        let delegate = makeDelegate(hasCompletedWelcome: true, store: store)
 
         delegate.applicationWillResignActive(
             Notification(name: NSApplication.didResignActiveNotification)
         )
 
-        XCTAssertTrue(storage.load().isEmpty)
+        for _ in 0..<100 where storage.load().first?.isPinned != true {
+            await Task.yield()
+        }
+        XCTAssertEqual(storage.load().first?.isPinned, true)
     }
 
     func testTerminatingKeepsPinnedItemsAndRemovesUnpinnedHistory() throws {
@@ -79,8 +81,7 @@ final class ApplicationLifecycleTests: XCTestCase {
             defaults: defaults,
             sourceApplicationProvider: { nil }
         )
-        let delegate = makeDelegate(hasCompletedWelcome: true)
-        delegate.store = store
+        let delegate = makeDelegate(hasCompletedWelcome: true, store: store)
 
         delegate.applicationWillTerminate(
             Notification(name: NSApplication.willTerminateNotification)
@@ -90,8 +91,25 @@ final class ApplicationLifecycleTests: XCTestCase {
         XCTAssertEqual(storage.load().map(\.text), ["pinned"])
     }
 
-    private func makeDelegate(hasCompletedWelcome: Bool) -> AppDelegate {
+    func testStoreIsInjectedBeforeAnyViewLifecycleCallback() throws {
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: ClipboardStorage(appDirectory: try makeTemporaryDirectory()),
+            defaults: makeDefaults(),
+            sourceApplicationProvider: { nil }
+        )
+
+        let delegate = makeDelegate(hasCompletedWelcome: true, store: store)
+
+        XCTAssertTrue(delegate.store === store)
+    }
+
+    private func makeDelegate(
+        hasCompletedWelcome: Bool,
+        store: ClipboardStore? = nil
+    ) -> AppDelegate {
         AppDelegate(
+            store: store,
             hasCompletedWelcome: { hasCompletedWelcome },
             applyAccessoryActivationPolicy: {},
             activateApplication: {},
@@ -114,9 +132,7 @@ final class ApplicationLifecycleTests: XCTestCase {
         return defaults
     }
 
-    private func makePasteboard() -> NSPasteboard {
-        NSPasteboard(
-            name: NSPasteboard.Name("CopyClipLiteLifecycleTests-\(UUID().uuidString)")
-        )
+    private func makePasteboard() -> StubStorePasteboard {
+        StubStorePasteboard()
     }
 }

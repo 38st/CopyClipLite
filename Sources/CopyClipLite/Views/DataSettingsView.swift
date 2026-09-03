@@ -7,6 +7,7 @@ struct DataSettingsView: View {
     @StateObject private var updateChecker = UpdateChecker()
     @StateObject private var transferState = SettingsTransferCoordinator()
     @State private var isConfirmingExport = false
+    @State private var isConfirmingUnpinAll = false
 
     var body: some View {
         Form {
@@ -40,6 +41,16 @@ struct DataSettingsView: View {
         } message: {
             Text(importConfirmationMessage)
         }
+        .confirmationDialog(
+            "Unpin All Clips?",
+            isPresented: $isConfirmingUnpinAll,
+            titleVisibility: .visible
+        ) {
+            Button("Unpin All", role: .destructive) { store.unpinAll() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(unpinAllConfirmationMessage)
+        }
     }
 
     private var storageSection: some View {
@@ -52,6 +63,20 @@ struct DataSettingsView: View {
             }
             Button("Reveal in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([store.storageLocation])
+            }
+            LabeledContent("Backups") {
+                Text(
+                    "\(store.backupInventory.count) · "
+                        + ByteCountFormatter.string(
+                            fromByteCount: store.backupInventory.totalByteCount,
+                            countStyle: .file
+                        )
+                )
+            }
+            HStack {
+                Button("Reveal in Finder") { revealBackups() }
+                Button("Delete Backups", role: .destructive) { store.deleteBackups() }
+                    .disabled(store.backupInventory.count == 0 || store.isTransferBusy)
             }
             if let errorMessage = store.storageErrorMessage {
                 SettingsErrorText(errorMessage)
@@ -70,6 +95,8 @@ struct DataSettingsView: View {
             HStack {
                 Button("Export…") { isConfirmingExport = true }
                 Button("Import…") { chooseImport() }
+                Button("Unpin All…") { isConfirmingUnpinAll = true }
+                    .disabled(pinnedItemCount == 0)
             }
             .disabled(store.isTransferBusy || transferState.isLoadingDroppedImport)
             if let progress = store.transferProgressText
@@ -127,6 +154,28 @@ struct DataSettingsView: View {
         let clipWord = preview.itemCount == 1 ? "clip" : "clips"
         return
             "Import \(preview.itemCount) \(clipWord) (\(preview.textCount) text, \(preview.imageCount) images)?"
+    }
+
+    private var pinnedItemCount: Int {
+        store.items.filter(\.isPinned).count
+    }
+
+    private var unpinAllConfirmationMessage: String {
+        let pinnedText = pinnedItemCount == 1 ? "1 pinned clip" : "\(pinnedItemCount) pinned clips"
+        let deletedCount = store.prospectiveUnpinAllDeletionCount()
+        guard deletedCount > 0 else {
+            return "This will unpin \(pinnedText). Your retention settings will apply to them."
+        }
+        let deletedText = deletedCount == 1 ? "1 clip" : "\(deletedCount) clips"
+        return "This will unpin \(pinnedText) and permanently delete \(deletedText) under your current retention settings."
+    }
+
+    private func revealBackups() {
+        if store.backupInventory.urls.isEmpty {
+            NSWorkspace.shared.open(store.backupLocation)
+        } else {
+            NSWorkspace.shared.activateFileViewerSelecting(store.backupInventory.urls)
+        }
     }
 
     private var importConfirmationMessage: String {

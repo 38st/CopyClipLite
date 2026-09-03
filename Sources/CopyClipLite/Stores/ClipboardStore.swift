@@ -32,6 +32,8 @@ final class ClipboardStore: ObservableObject {
     private static let defaultHistoryLimit = 50
     private static let pollInterval: TimeInterval = 0.5
     private static let pruneInterval: TimeInterval = 15 * 60
+    private static let backupCleanupErrorMessage =
+        "Clipboard backups could not be deleted. Check the Data section in Settings."
     private static let ignoredPasteboardTypes: Set<NSPasteboard.PasteboardType> = [
         NSPasteboard.PasteboardType("org.nspasteboard.TransientType"),
         NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"),
@@ -48,13 +50,7 @@ final class ClipboardStore: ObservableObject {
 
     @Published private(set) var items: [ClipboardItem]
     @Published private(set) var historyLimit: Int
-    @Published var retentionPolicy: ClipboardRetentionPolicy {
-        didSet {
-            defaults.set(retentionPolicy.rawValue, forKey: DefaultsKey.retentionPolicy)
-            pruneHistory()
-            persist()
-        }
-    }
+    @Published private(set) var retentionPolicy: ClipboardRetentionPolicy
     @Published var keepPinnedOnClear: Bool {
         didSet {
             defaults.set(keepPinnedOnClear, forKey: DefaultsKey.keepPinnedOnClear)
@@ -87,7 +83,8 @@ final class ClipboardStore: ObservableObject {
     @Published private(set) var storageErrorMessage: String?
     @Published private(set) var captureWarning: String?
     @Published private(set) var pasteboardWriteWarning: String?
-    private let pasteboard: NSPasteboard
+    @Published private(set) var backupInventory: ClipboardBackupInventory
+    private let pasteboard: any ClipboardStorePasteboard
     private let storage: any ClipboardStoreRepository
     private let defaults: UserDefaults
     private let ignoredApplicationStore: ClipboardIgnoredApplicationStore
@@ -109,6 +106,7 @@ final class ClipboardStore: ObservableObject {
     private var thumbnailCache = ClipboardThumbnailCache()
     private let thumbnailLoader: @Sendable (ClipboardItem) -> ClipboardThumbnailResult?
     private var transferObservation: AnyCancellable? = nil
+    private var exportLimitWarningMessage: String?
 
     var isTransferBusy: Bool { transferCoordinator.isBusy }
     var transferProgressText: String? { transferCoordinator.progressText }
@@ -117,48 +115,53 @@ final class ClipboardStore: ObservableObject {
         storage.fileURL
     }
 
+    var backupLocation: URL {
+        storage.fileURL.deletingLastPathComponent()
+    }
+
     func cachedThumbnailData(for item: ClipboardItem) -> Data? {
         switch thumbnailCache.lookup(for: item, now: clock.now()) {
         case let .data(data):
             return data
         case .unavailable:
             return nil
-        case .load:
-            break
-        }
-        let thumbnailLoader = thumbnailLoader
-        let expectedContentHash = item.image?.contentHash
-        let expectedFileName = item.image?.fileName
-        Task { @MainActor [weak self] in
-            let result = await Task.detached(priority: .utility) {
-                thumbnailLoader(item)
-            }.value
-            guard let self else { return }
-            guard let result,
-                  let itemIndex = self.items.firstIndex(where: { $0.id == item.id }),
-                  self.items[itemIndex].image?.contentHash == expectedContentHash,
-                  self.items[itemIndex].image?.fileName == expectedFileName else {
-                self.thumbnailCache.finishLoading(
-                    id: item.id,
-                    data: nil,
-                    now: self.clock.now()
-                )
-                if result != nil {
+        case let .load(load):
+            let thumbnailLoader = thumbnailLoader
+            let expectedContentHash = item.image?.contentHash
+            let expectedFileName = item.image?.fileName
+            Task { @MainActor [weak self] in
+                let result = await Task.detached(priority: .utility) {
+                    thumbnailLoader(item)
+                }.value
+                guard let self else { return }
+                guard let result,
+                      let itemIndex = self.items.firstIndex(where: { $0.id == item.id }),
+                      self.items[itemIndex].image?.contentHash == expectedContentHash,
+                      self.items[itemIndex].image?.fileName == expectedFileName else {
+                    self.thumbnailCache.finishLoading(
+                        id: item.id,
+                        load: load,
+                        data: nil,
+                        now: self.clock.now()
+                    )
+                    if result != nil {
+                        self.persist()
+                    }
+                    return
+                }
+                if self.items[itemIndex].image?.thumbnailFileName != result.fileName {
+                    self.items[itemIndex].image?.thumbnailFileName = result.fileName
+                    self.items[itemIndex].image?.thumbnailData = nil
                     self.persist()
                 }
-                return
+                self.thumbnailCache.finishLoading(
+                    id: item.id,
+                    load: load,
+                    data: result.data,
+                    now: self.clock.now()
+                )
+                self.objectWillChange.send()
             }
-            if self.items[itemIndex].image?.thumbnailFileName != result.fileName {
-                self.items[itemIndex].image?.thumbnailFileName = result.fileName
-                self.items[itemIndex].image?.thumbnailData = nil
-                self.persist()
-            }
-            self.thumbnailCache.finishLoading(
-                id: item.id,
-                data: result.data,
-                now: self.clock.now()
-            )
-            self.objectWillChange.send()
         }
         return nil
     }
@@ -183,7 +186,7 @@ final class ClipboardStore: ObservableObject {
     }
 
     init(
-        pasteboard: NSPasteboard = .general,
+        pasteboard: any ClipboardStorePasteboard = NSPasteboard.general,
         storage: any ClipboardStoreRepository = ClipboardStorage(),
         defaults: UserDefaults = .standard,
         sourceApplicationProvider: (() -> ClipboardSourceApplication?)? = nil,
@@ -194,6 +197,10 @@ final class ClipboardStore: ObservableObject {
     ) {
         let loadResult = storage.loadResult()
         let ignoredApplicationStore = ClipboardIgnoredApplicationStore(defaults: defaults)
+        ClipboardDefaultExclusionsSeeder.seedIfNeeded(
+            defaults: defaults,
+            store: ignoredApplicationStore
+        )
         self.pasteboard = pasteboard
         self.storage = storage
         self.defaults = defaults
@@ -212,9 +219,12 @@ final class ClipboardStore: ObservableObject {
         self.clock = clock
         self.monitoringSchedule = ClipboardMonitoringSchedule(clock: clock)
         self.thumbnailLoader = thumbnailLoader ?? { storage.thumbnailDataRepairingIfNeeded(for: $0) }
-        self.sourceApplicationProvider = sourceApplicationProvider ?? ClipboardSourceApplication.frontmost
-        self.usesWorkspaceSourceTracking = sourceApplicationProvider == nil
-        self.lastActiveApplication = sourceApplicationProvider == nil
+        self.backupInventory = (try? storage.backupInventory()) ?? .empty
+        let usesSystemPasteboard = pasteboard is NSPasteboard
+        self.sourceApplicationProvider = sourceApplicationProvider
+            ?? (usesSystemPasteboard ? ClipboardSourceApplication.frontmost : { nil })
+        self.usesWorkspaceSourceTracking = sourceApplicationProvider == nil && usesSystemPasteboard
+        self.lastActiveApplication = usesWorkspaceSourceTracking
             ? ClipboardSourceApplication.frontmost()
             : nil
         switch loadResult {
@@ -281,22 +291,43 @@ final class ClipboardStore: ObservableObject {
 
     func visibleItems(matching query: String, filter: ClipboardContentFilter = .all) -> [ClipboardItem] {
         let filteredItems = items.filter { filter.matches($0) }
-        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedQuery.isEmpty else {
-            return filteredItems
-        }
-
-        return filteredItems.filter { item in
-            item.searchableText.localizedCaseInsensitiveContains(trimmedQuery)
-        }
+        let searchQuery = ClipboardSearchQuery(query)
+        return filteredItems.filter(searchQuery.matches)
     }
 
     func setHistoryLimit(_ limit: Int) {
         guard !isTransferBusy else { return }
-        historyLimit = min(max(limit, 10), 200)
+        let normalizedLimit = min(max(limit, 10), 200)
+        guard normalizedLimit != historyLimit else { return }
+        historyLimit = normalizedLimit
         defaults.set(historyLimit, forKey: DefaultsKey.historyLimit)
         pruneHistory()
         persist()
+    }
+
+    func setRetentionPolicy(_ policy: ClipboardRetentionPolicy) {
+        guard !isTransferBusy, policy != retentionPolicy else { return }
+        retentionPolicy = policy
+        defaults.set(retentionPolicy.rawValue, forKey: DefaultsKey.retentionPolicy)
+        pruneHistory()
+        persist()
+    }
+
+    func prospectiveDeletionCount(
+        historyLimit proposedHistoryLimit: Int? = nil,
+        retentionPolicy proposedRetentionPolicy: ClipboardRetentionPolicy? = nil,
+        now: Date? = nil
+    ) -> Int {
+        let proposedPolicy = ClipboardHistoryPolicy(
+            unpinnedLimit: min(max(proposedHistoryLimit ?? historyLimit, 10), 200),
+            retentionPolicy: proposedRetentionPolicy ?? retentionPolicy
+        )
+        let result = ClipboardHistoryRules.applyingPolicy(
+            to: items,
+            policy: proposedPolicy,
+            now: now ?? clock.now()
+        )
+        return result.expiredCount + result.overLimitCount
     }
 
     func setMonitoringEnabled(_ enabled: Bool) {
@@ -428,12 +459,14 @@ final class ClipboardStore: ObservableObject {
             }
         }
 
+        defer { refreshBackupInventory() }
         let commit = try await transferCoordinator.commitImport(
             plan: plan,
             strategy: strategy
         )
         items = commit.items
         thumbnailCache = ClipboardThumbnailCache()
+        clearExportLimitWarningIfResolved()
         persistenceBlockedByLoadFailure = false
         persistenceLoadFailureMessage = nil
         storageErrorMessage = nil
@@ -442,6 +475,20 @@ final class ClipboardStore: ObservableObject {
 
     @discardableResult
     func copy(_ item: ClipboardItem) -> Bool {
+        copy(item, includingRichText: true)
+    }
+
+    @discardableResult
+    func copyWithoutFormatting(_ item: ClipboardItem) -> Bool {
+        guard item.contentKind == .text else { return false }
+        return copy(item, includingRichText: false)
+    }
+
+    @discardableResult
+    private func copy(
+        _ item: ClipboardItem,
+        includingRichText: Bool
+    ) -> Bool {
         guard !isTransferBusy else {
             return false
         }
@@ -460,7 +507,11 @@ final class ClipboardStore: ObservableObject {
             imageData = nil
         }
 
-        let writeResult = writeToPasteboard(item, imageData: imageData)
+        let writeResult = writeToPasteboard(
+            item,
+            imageData: imageData,
+            includingRichText: includingRichText
+        )
         guard writeResult.wroteRequiredRepresentations else {
             storageErrorMessage = "The clip could not be written to the system clipboard."
             return false
@@ -490,6 +541,10 @@ final class ClipboardStore: ObservableObject {
         guard !isTransferBusy else { return }
         let transformedText = transformation.applied(to: item.text)
         guard !transformedText.isEmpty else {
+            return
+        }
+        guard transformedText.count <= ClipboardStorage.maximumImportedTextCharacters else {
+            captureWarning = "A text clip was skipped because it exceeds 20,000 characters."
             return
         }
 
@@ -538,29 +593,84 @@ final class ClipboardStore: ObservableObject {
             return
         }
 
-        items[index].isPinned.toggle()
+        setPinned(!items[index].isPinned, ids: [item.id])
+    }
+
+    func setPinned(_ isPinned: Bool, ids: Set<ClipboardItem.ID>) {
+        guard !isTransferBusy else { return }
+        let matchingIndices = items.indices.filter { ids.contains(items[$0].id) }
+        guard matchingIndices.contains(where: { items[$0].isPinned != isPinned }) else {
+            return
+        }
+        for index in matchingIndices {
+            items[index].isPinned = isPinned
+        }
+        pruneHistory()
+        persist()
+        if isPinned, items.count > ClipboardStorage.maximumImportedItems {
+            let warning = "History cannot be exported: "
+                + ClipboardTransferCodec.itemLimitExceededReason(itemCount: items.count)
+            exportLimitWarningMessage = warning
+            captureWarning = warning
+        }
+    }
+
+    func unpinAll() {
+        guard !isTransferBusy, items.contains(where: \.isPinned) else { return }
+        for index in items.indices {
+            items[index].isPinned = false
+        }
         pruneHistory()
         persist()
     }
 
-    func delete(_ item: ClipboardItem) {
-        guard !isTransferBusy else { return }
-        items.removeAll { $0.id == item.id }
-        thumbnailCache = ClipboardThumbnailCache()
-        flushPendingPersist()
+    func prospectiveUnpinAllDeletionCount(now: Date? = nil) -> Int {
+        let unpinnedItems = items.map { item in
+            var item = item
+            item.isPinned = false
+            return item
+        }
+        let result = ClipboardHistoryRules.applyingPolicy(
+            to: unpinnedItems,
+            policy: historyPolicy,
+            now: now ?? clock.now()
+        )
+        return result.expiredCount + result.overLimitCount
     }
 
-    func clearHistory() {
-        guard !isTransferBusy else { return }
+    @discardableResult
+    func delete(_ item: ClipboardItem) async -> Bool {
+        await delete(ids: [item.id])
+    }
+
+    @discardableResult
+    func delete(ids: Set<ClipboardItem.ID>) async -> Bool {
+        guard !isTransferBusy else { return false }
+        let removedIDs = Set(items.filter { ids.contains($0.id) }.map(\.id))
+        guard !removedIDs.isEmpty else { return false }
+        items.removeAll { removedIDs.contains($0.id) }
+        thumbnailCache.invalidate(ids: removedIDs)
+        clearExportLimitWarningIfResolved()
+        return await flushPendingPersist()
+    }
+
+    @discardableResult
+    func clearHistory() async -> Bool {
+        guard !isTransferBusy else { return false }
         invalidatePendingImageCaptures()
+        let previousIDs = Set(items.map(\.id))
         if keepPinnedOnClear {
             items.removeAll { !$0.isPinned }
         } else {
             items.removeAll()
         }
 
-        thumbnailCache = ClipboardThumbnailCache()
-        flushPendingPersist()
+        thumbnailCache.invalidate(ids: previousIDs.subtracting(items.map(\.id)))
+        clearExportLimitWarningIfResolved()
+        guard await flushPendingPersist() else {
+            return false
+        }
+        return await purgeBackupsReportingFailureAsync()
     }
 
     private func startMonitoring() {
@@ -672,7 +782,9 @@ final class ClipboardStore: ObservableObject {
                 )
                 captureWarning = request.associatedWarning
             case let .failed(message, request):
-                captureWarning = message
+                captureWarning = request.candidate.isSoleFileURLSource
+                    ? request.associatedWarning
+                    : message
                 if let associatedText = request.associatedText {
                     record(
                         associatedText.text,
@@ -703,6 +815,7 @@ final class ClipboardStore: ObservableObject {
             let loadedItems = try storage.loadResult().get()
             let itemsToKeep = itemsAfterQuitCleanup(loadedItems)
             _ = try storage.saveValidated(itemsToKeep)
+            try storage.purgeBackups()
             return true
         } catch {
             return false
@@ -713,19 +826,19 @@ final class ClipboardStore: ObservableObject {
     func clearUnpinnedHistoryOnQuitIfNeeded() -> Bool {
         invalidatePendingImageCaptures()
         guard clearUnpinnedOnQuit else {
-            return flushPendingPersist()
+            return flushPendingPersistSynchronously()
         }
 
         let previousItems = items
         items = Self.itemsAfterQuitCleanup(items)
         thumbnailCache = ClipboardThumbnailCache()
 
-        guard flushPendingPersist() else {
+        guard flushPendingPersistSynchronously() else {
             items = previousItems
             thumbnailCache = ClipboardThumbnailCache()
             return false
         }
-        return true
+        return purgeBackupsReportingFailure()
     }
 
     nonisolated private static func itemsAfterQuitCleanup(
@@ -795,17 +908,20 @@ final class ClipboardStore: ObservableObject {
     @discardableResult
     private func writeToPasteboard(
         _ item: ClipboardItem,
-        imageData: Data?
+        imageData: Data?,
+        includingRichText: Bool = true
     ) -> ClipboardPasteboardWriteResult {
         let request: ClipboardPasteboardWriteRequest
         switch item.contentKind {
         case .text:
             var optional: [ClipboardPasteboardRepresentation] = []
-            if let rtfData = item.rtfData {
-                optional.append(ClipboardPasteboardRepresentation(.rtf, value: .data(rtfData)))
-            }
-            if let htmlData = item.htmlData {
-                optional.append(ClipboardPasteboardRepresentation(.html, value: .data(htmlData)))
+            if includingRichText {
+                if let rtfData = item.rtfData {
+                    optional.append(ClipboardPasteboardRepresentation(.rtf, value: .data(rtfData)))
+                }
+                if let htmlData = item.htmlData {
+                    optional.append(ClipboardPasteboardRepresentation(.html, value: .data(htmlData)))
+                }
             }
             request = ClipboardPasteboardWriteRequest(
                 required: [
@@ -892,9 +1008,8 @@ final class ClipboardStore: ObservableObject {
             policy: historyPolicy,
             now: now
         ).items
-        if Set(items.map(\.id)) != previousIDs {
-            thumbnailCache = ClipboardThumbnailCache()
-        }
+        thumbnailCache.invalidate(ids: previousIDs.subtracting(items.map(\.id)))
+        clearExportLimitWarningIfResolved()
     }
 
     private func pruneHistoryAndPersistIfNeeded(now: Date? = nil) {
@@ -928,7 +1043,7 @@ final class ClipboardStore: ObservableObject {
     }
 
     @discardableResult
-    func flushPendingPersist() -> Bool {
+    func flushPendingPersist() async -> Bool {
         invalidatePendingPersist()
         guard !persistenceBlockedByLoadFailure else {
             storageErrorMessage = persistenceLoadFailureMessage
@@ -936,7 +1051,26 @@ final class ClipboardStore: ObservableObject {
         }
         let snapshot = items
         do {
-            let persistedItems = try persistenceCoordinator.flush(snapshot)
+            let persistedItems = try await persistenceCoordinator.flush(snapshot)
+            applyPersistedImageReferences(persistedItems)
+            storageErrorMessage = nil
+            return true
+        } catch {
+            storageErrorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    @discardableResult
+    private func flushPendingPersistSynchronously() -> Bool {
+        invalidatePendingPersist()
+        guard !persistenceBlockedByLoadFailure else {
+            storageErrorMessage = persistenceLoadFailureMessage
+            return false
+        }
+        let snapshot = items
+        do {
+            let persistedItems = try persistenceCoordinator.flushSynchronously(snapshot)
             applyPersistedImageReferences(persistedItems)
             storageErrorMessage = nil
             return true
@@ -982,6 +1116,67 @@ final class ClipboardStore: ObservableObject {
 
     func dismissPasteboardWriteWarning() {
         pasteboardWriteWarning = nil
+    }
+
+    func deleteBackups() {
+        guard !isTransferBusy else { return }
+        purgeBackupsReportingFailure()
+    }
+
+    @discardableResult
+    private func purgeBackupsReportingFailure() -> Bool {
+        do {
+            try storage.purgeBackups()
+            backupInventory = .empty
+            if storageErrorMessage == Self.backupCleanupErrorMessage {
+                storageErrorMessage = nil
+            }
+            return true
+        } catch {
+            refreshBackupInventory()
+            storageErrorMessage = Self.backupCleanupErrorMessage
+            return false
+        }
+    }
+
+    @discardableResult
+    private func purgeBackupsReportingFailureAsync() async -> Bool {
+        let storage = storage
+        let result = await Task.detached(priority: .utility) {
+            Result { try storage.purgeBackups() }
+        }.value
+        switch result {
+        case .success:
+            backupInventory = .empty
+            if storageErrorMessage == Self.backupCleanupErrorMessage {
+                storageErrorMessage = nil
+            }
+            return true
+        case .failure:
+            let inventory = await Task.detached(priority: .utility) {
+                try? storage.backupInventory()
+            }.value
+            if let inventory {
+                backupInventory = inventory
+            }
+            storageErrorMessage = Self.backupCleanupErrorMessage
+            return false
+        }
+    }
+
+    private func refreshBackupInventory() {
+        if let inventory = try? storage.backupInventory() {
+            backupInventory = inventory
+        }
+    }
+
+    private func clearExportLimitWarningIfResolved() {
+        guard items.count <= ClipboardStorage.maximumImportedItems,
+              let exportLimitWarningMessage else { return }
+        if captureWarning == exportLimitWarningMessage {
+            captureWarning = nil
+        }
+        self.exportLimitWarningMessage = nil
     }
 
     private func clearCopiedIndicator(after id: ClipboardItem.ID) {

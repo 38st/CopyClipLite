@@ -1,5 +1,25 @@
 import Foundation
 
+enum ClipboardPanelSelectionModifier: Equatable {
+    case single
+    case toggle
+    case range
+}
+
+struct ClipboardPanelSelection: Equatable {
+    var selectedIDs: Set<ClipboardItem.ID> = []
+    var primaryID: ClipboardItem.ID?
+    var anchorID: ClipboardItem.ID?
+
+    static func single(_ id: ClipboardItem.ID?) -> ClipboardPanelSelection {
+        ClipboardPanelSelection(
+            selectedIDs: id.map { [$0] } ?? [],
+            primaryID: id,
+            anchorID: id
+        )
+    }
+}
+
 enum ClipboardPanelModel {
     static func displayedItems(_ visibleItems: [ClipboardItem]) -> [ClipboardItem] {
         visibleItems.filter(\.isPinned) + visibleItems.filter { !$0.isPinned }
@@ -28,6 +48,79 @@ enum ClipboardPanelModel {
         }
         let nextIndex = min(max(selectedIndex + offset, 0), displayedItems.count - 1)
         return displayedItems[nextIndex].id
+    }
+
+    static func selection(
+        afterSelecting id: ClipboardItem.ID,
+        modifier: ClipboardPanelSelectionModifier,
+        current: ClipboardPanelSelection,
+        displayedItems: [ClipboardItem]
+    ) -> ClipboardPanelSelection {
+        guard displayedItems.contains(where: { $0.id == id }) else {
+            return current
+        }
+
+        switch modifier {
+        case .single:
+            return .single(id)
+        case .toggle:
+            var selectedIDs = current.selectedIDs
+            if selectedIDs.contains(id) {
+                selectedIDs.remove(id)
+            } else {
+                selectedIDs.insert(id)
+            }
+            let primaryID = selectedIDs.contains(id)
+                ? id
+                : displayedItems.first(where: { selectedIDs.contains($0.id) })?.id
+            return ClipboardPanelSelection(
+                selectedIDs: selectedIDs,
+                primaryID: primaryID,
+                anchorID: id
+            )
+        case .range:
+            let anchorID = current.anchorID ?? current.primaryID ?? id
+            guard let anchorIndex = displayedItems.firstIndex(where: { $0.id == anchorID }),
+                  let selectedIndex = displayedItems.firstIndex(where: { $0.id == id }) else {
+                return .single(id)
+            }
+            let bounds = min(anchorIndex, selectedIndex)...max(anchorIndex, selectedIndex)
+            return ClipboardPanelSelection(
+                selectedIDs: Set(bounds.map { displayedItems[$0].id }),
+                primaryID: id,
+                anchorID: anchorID
+            )
+        }
+    }
+
+    static func reconciledSelection(
+        _ selection: ClipboardPanelSelection,
+        displayedItems: [ClipboardItem]
+    ) -> ClipboardPanelSelection {
+        let displayedIDs = Set(displayedItems.map(\.id))
+        let selectedIDs = selection.selectedIDs.intersection(displayedIDs)
+        if selectedIDs.isEmpty {
+            return .single(displayedItems.first?.id)
+        }
+        let primaryID = selection.primaryID.flatMap { selectedIDs.contains($0) ? $0 : nil }
+            ?? displayedItems.first(where: { selectedIDs.contains($0.id) })?.id
+        let anchorID = selection.anchorID.flatMap { displayedIDs.contains($0) ? $0 : nil }
+            ?? primaryID
+        return ClipboardPanelSelection(
+            selectedIDs: selectedIDs,
+            primaryID: primaryID,
+            anchorID: anchorID
+        )
+    }
+
+    static func item(
+        forQuickSelectionNumber number: Int,
+        displayedItems: [ClipboardItem]
+    ) -> ClipboardItem? {
+        guard (1...9).contains(number), displayedItems.indices.contains(number - 1) else {
+            return nil
+        }
+        return displayedItems[number - 1]
     }
 
     static func selectionAfterDeleting(

@@ -26,7 +26,7 @@ private final class ClipboardDragFileCompletion: @unchecked Sendable {
     }
 }
 
-private final class ClipboardDragFileStager: @unchecked Sendable {
+final class ClipboardDragFileStager: @unchecked Sendable {
     private let imageReader: any ClipboardImageReading
     private let item: ClipboardItem
     private let fileManager: FileManager

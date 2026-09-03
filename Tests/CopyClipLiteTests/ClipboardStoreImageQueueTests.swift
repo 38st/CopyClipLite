@@ -24,7 +24,8 @@ extension ClipboardStoreTests {
         try await waitForCapturedItem(in: store)
         XCTAssertNotNil(store.items.first?.image?.data)
 
-        XCTAssertTrue(store.flushPendingPersist())
+        let didFlush = await store.flushPendingPersist()
+        XCTAssertTrue(didFlush)
 
         let externalizedItem = try XCTUnwrap(store.items.first)
         XCTAssertNil(externalizedItem.image?.data)
@@ -68,7 +69,8 @@ extension ClipboardStoreTests {
                 try await Task.sleep(nanoseconds: 1_000_000)
             }
             XCTAssertEqual(store.items.count, marker)
-            XCTAssertTrue(store.flushPendingPersist())
+            let didFlush = await store.flushPendingPersist()
+            XCTAssertTrue(didFlush)
             XCTAssertEqual(
                 store.items.reduce(0) {
                     $0 + ($1.image?.data?.count ?? 0)
@@ -150,6 +152,63 @@ extension ClipboardStoreTests {
         )
     }
 
+    func testEvictingUnrelatedClipKeepsSurvivingThumbnailCached() async throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let now = Date()
+        let imageItem = ClipboardItem(
+            image: ClipboardImagePayload(
+                data: try makePNGData(width: 2, height: 2),
+                width: 2,
+                height: 2
+            ),
+            createdAt: now,
+            lastCopiedAt: now,
+            isPinned: true
+        )
+        let unpinnedItems = (0..<10).map { index in
+            let timestamp = now.addingTimeInterval(TimeInterval(-index))
+            return ClipboardItem(
+                text: "clip-\(index)",
+                createdAt: timestamp,
+                lastCopiedAt: timestamp
+            )
+        }
+        storage.save([imageItem] + unpinnedItems)
+        let counter = LockedThumbnailLoadCounter()
+        let thumbnailData = Data([1, 2, 3])
+        let pasteboard = makePasteboard()
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: storage,
+            defaults: makeDefaults(),
+            sourceApplicationProvider: { nil },
+            thumbnailLoader: { item in
+                counter.increment()
+                return ClipboardThumbnailResult(
+                    data: thumbnailData,
+                    fileName: item.image?.thumbnailFileName ?? "test-thumbnail.png"
+                )
+            }
+        )
+        store.setHistoryLimit(10)
+        let storedImage = try XCTUnwrap(store.items.first(where: \.isImage))
+
+        XCTAssertNil(store.cachedThumbnailData(for: storedImage))
+        for _ in 0..<100 where store.cachedThumbnailData(for: storedImage) == nil {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(store.cachedThumbnailData(for: storedImage), thumbnailData)
+        XCTAssertEqual(counter.value, 1)
+
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString("newest unrelated clip", forType: .string))
+        store.pollPasteboardForChanges()
+
+        let survivingImage = try XCTUnwrap(store.items.first(where: \.isImage))
+        XCTAssertEqual(store.cachedThumbnailData(for: survivingImage), thumbnailData)
+        XCTAssertEqual(counter.value, 1)
+    }
+
     func testClearInvalidatesPendingImageCapture() async throws {
         let pasteboard = makePasteboard()
         let store = ClipboardStore(
@@ -162,7 +221,7 @@ extension ClipboardStoreTests {
         pasteboard.clearContents()
         XCTAssertTrue(pasteboard.setData(Data([1, 2, 3]), forType: .png))
         store.pollPasteboardForChanges()
-        store.clearHistory()
+        await store.clearHistory()
         try await Task.sleep(nanoseconds: 300_000_000)
 
         XCTAssertTrue(store.items.isEmpty)
@@ -387,7 +446,7 @@ extension ClipboardStoreTests {
         store.pollPasteboardForChanges()
         let textItem = try XCTUnwrap(store.items.first(where: { $0.text == "delete me" }))
 
-        store.delete(textItem)
+        await store.delete(textItem)
 
         let reloadedImage = try XCTUnwrap(storage.load().first(where: { $0.id == imageID }))
         try assertReadableImageData(storage.imageData(for: reloadedImage))
@@ -424,7 +483,7 @@ extension ClipboardStoreTests {
         let imageItem = try XCTUnwrap(store.items.first)
         store.togglePin(imageItem)
 
-        store.clearHistory()
+        await store.clearHistory()
 
         let reloadedImage = try XCTUnwrap(storage.load().first)
         XCTAssertTrue(reloadedImage.isPinned)
@@ -442,5 +501,22 @@ extension ClipboardStoreTests {
         XCTAssertTrue(reloadedStoreImage.isPinned)
         XCTAssertTrue(reloadedStore.copy(reloadedStoreImage))
         try assertReadableImageData(reloadedPasteboard.data(forType: .png))
+    }
+}
+
+private final class LockedThumbnailLoadCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    func increment() {
+        lock.lock()
+        count += 1
+        lock.unlock()
     }
 }

@@ -68,4 +68,9 @@ grep -q './script/tests/installer_process_harness.sh' "$RELEASE_WORKFLOW" \
 grep -q './script/check_coverage.sh' "$RELEASE_WORKFLOW" \
   || fail "tagged release workflow does not enforce coverage gates"
 
-echo "PASS: release grammar, reproducible ZIP, validation parity, and Apple-account-free workflow"
+BUILD_SCRIPT="$REPO_ROOT/script/build_and_run.sh"
+grep -Fq 'UPDATE_FEED_URL="${COPYCLIP_UPDATE_FEED_URL:-https://api.github.com/repos/38st/CopyClipLite/releases/latest}"' \
+  "$BUILD_SCRIPT" \
+  || fail "source builds do not default to the public GitHub update feed"
+
+echo "PASS: release grammar, reproducible ZIP, validation parity, source update feed, and Apple-account-free workflow"

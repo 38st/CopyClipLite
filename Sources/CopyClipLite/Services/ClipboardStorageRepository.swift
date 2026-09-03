@@ -1,5 +1,14 @@
 import Foundation
 
+struct ClipboardBackupInventory: Equatable, Sendable {
+    let urls: [URL]
+    let totalByteCount: Int64
+
+    static let empty = ClipboardBackupInventory(urls: [], totalByteCount: 0)
+
+    var count: Int { urls.count }
+}
+
 protocol ClipboardHistoryRepository: Sendable {
     var fileURL: URL { get }
 
@@ -10,6 +19,9 @@ protocol ClipboardHistoryRepository: Sendable {
 
     @discardableResult
     func backup(_ items: [ClipboardItem], reason: String) throws -> URL
+
+    func backupInventory() throws -> ClipboardBackupInventory
+    func purgeBackups() throws
 }
 
 protocol ClipboardTransferRepository: Sendable {

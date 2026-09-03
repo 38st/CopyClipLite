@@ -102,6 +102,7 @@ final class GitHubUpdateFeedLoader: UpdateFeedLoading, @unchecked Sendable {
         }) else {
             throw UpdateFeedError.missingAsset
         }
+        try GitHubReleaseURLValidator.validate(asset.downloadURL)
         return CopyClipRelease(version: version, url: asset.downloadURL)
     }
 
@@ -130,6 +131,7 @@ enum UpdateFeedError: LocalizedError {
     case invalidResponse
     case invalidVersion
     case missingAsset
+    case invalidDownloadURL
     case unavailable
 
     var errorDescription: String? {
@@ -140,8 +142,21 @@ enum UpdateFeedError: LocalizedError {
             "The update service returned an invalid version."
         case .missingAsset:
             "The latest release does not include the macOS app download."
+        case .invalidDownloadURL:
+            "The update service returned an unsafe download address."
         case .unavailable:
             "No public update channel is configured for this build."
+        }
+    }
+}
+
+enum GitHubReleaseURLValidator {
+    static func validate(_ url: URL) throws {
+        guard url.scheme?.lowercased() == "https",
+              url.host?.lowercased() == "github.com",
+              url.user == nil,
+              url.password == nil else {
+            throw UpdateFeedError.invalidDownloadURL
         }
     }
 }
@@ -216,6 +231,12 @@ final class UpdateChecker: ObservableObject {
 
     func openAvailableUpdate() {
         guard case let .updateAvailable(_, url) = state else { return }
+        do {
+            try GitHubReleaseURLValidator.validate(url)
+        } catch {
+            state = .failed(error.localizedDescription)
+            return
+        }
         NSWorkspace.shared.open(url)
     }
 

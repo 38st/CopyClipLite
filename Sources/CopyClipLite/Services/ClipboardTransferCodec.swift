@@ -1,6 +1,25 @@
 import Foundation
 
 enum ClipboardTransferCodec {
+    static func itemLimitExceededReason(itemCount: Int) -> String {
+        let actualCount = groupedDecimal(itemCount)
+        let limit = groupedDecimal(ClipboardStorage.maximumImportedItems)
+        return "\(actualCount) clips exceeds the \(limit)-clip export limit. "
+            + "Unpin or delete clips, then export again."
+    }
+
+    private static func groupedDecimal(_ value: Int) -> String {
+        let digits = Array(String(value))
+        var groups: [String] = []
+        var end = digits.count
+        while end > 0 {
+            let start = max(0, end - 3)
+            groups.append(String(digits[start..<end]))
+            end = start
+        }
+        return groups.reversed().joined(separator: ",")
+    }
+
     static func encode(_ items: [ClipboardItem]) throws -> Data {
         try validateForExport(items)
         let document = ClipboardTransferDocument(items: items.map(ClipboardTransferItem.init))
@@ -137,6 +156,11 @@ enum ClipboardTransferCodec {
     }
 
     private static func validateForExport(_ items: [ClipboardItem]) throws {
+        guard items.count <= ClipboardStorage.maximumImportedItems else {
+            throw ClipboardStorageError.incompatibleExport(
+                itemLimitExceededReason(itemCount: items.count)
+            )
+        }
         do {
             try validateImportedItems(items)
             let latestAllowedDate = Date().addingTimeInterval(5 * 60)

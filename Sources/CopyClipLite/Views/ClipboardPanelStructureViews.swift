@@ -68,10 +68,11 @@ struct ClipboardPanelSearchControls: View {
         VStack(spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Search history", text: $searchText)
+                TextField("Search history or app:Safari", text: $searchText)
                     .textFieldStyle(.plain)
                     .focused(searchFocus)
                     .onSubmit(submit)
+                    .help("Use app:name to search clips from one app. Put names with spaces in quotes.")
                 if !searchText.isEmpty {
                     Button {
                         searchText = ""
@@ -169,6 +170,11 @@ struct ClipboardPanelFooter: View {
     let historySummary: String
     let clearableItemCount: Int
     let keepPinnedOnClear: Bool
+    let selectedItemCount: Int
+    let selectedPinnedCount: Int
+    let pinSelection: () -> Void
+    let unpinSelection: () -> Void
+    let requestDeleteSelection: () -> Void
     let requestClear: () -> Void
 
     var body: some View {
@@ -179,12 +185,30 @@ struct ClipboardPanelFooter: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
                 .layoutPriority(1)
-            Text("↑↓ · ↩ · ⌘P")
+            Text("↑↓ · ↩ · ⌘1–9")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
-                .help("Arrow keys select, Return uses a clip, Command-P pins")
+                .help("Arrow keys select, Return uses a clip, and Command-1 through Command-9 quickly use a clip")
             Spacer()
+            if selectedItemCount > 1 {
+                Menu {
+                    Button("Pin Selection", action: pinSelection)
+                        .disabled(selectedPinnedCount == selectedItemCount)
+                    Button("Unpin Selection", action: unpinSelection)
+                        .disabled(selectedPinnedCount == 0)
+                    Divider()
+                    Button(
+                        "Delete Selection",
+                        role: .destructive,
+                        action: requestDeleteSelection
+                    )
+                } label: {
+                    Text("\(selectedItemCount) Selected")
+                }
+                .help("Actions for the selected clips")
+                .accessibilityLabel("Actions for \(selectedItemCount) selected clips")
+            }
             Button(role: .destructive, action: requestClear) {
                 Label("Clear", systemImage: "trash")
             }

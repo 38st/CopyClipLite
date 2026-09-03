@@ -9,6 +9,7 @@ struct ClipboardItemRow: View {
     let thumbnailData: Data?
     let activate: () -> Void
     let copy: () -> Void
+    let copyWithoutFormatting: (() -> Void)?
     let togglePin: () -> Void
     let delete: () -> Void
     let ignoreApplication: (() -> Void)?
@@ -126,6 +127,9 @@ struct ClipboardItemRow: View {
         )
         .contextMenu {
             Button("Copy", action: copy)
+            if let copyWithoutFormatting {
+                Button("Copy as Plain Text", action: copyWithoutFormatting)
+            }
             Button(item.isPinned ? "Unpin" : "Pin", action: togglePin)
 
             if item.contentKind == .text, let transform {

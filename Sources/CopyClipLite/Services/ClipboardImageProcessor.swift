@@ -36,6 +36,14 @@ struct ClipboardImageCandidate: Sendable {
         }
         return false
     }
+
+    var isSoleFileURLSource: Bool {
+        guard sources.count == 1,
+              case .fileURL = sources[0] else {
+            return false
+        }
+        return true
+    }
 }
 
 enum ClipboardImageProcessingError: LocalizedError, Sendable, Equatable {
@@ -122,14 +130,15 @@ enum ClipboardImageProcessor {
 
         guard width <= maximumDimension,
               height <= maximumDimension,
-              width.multipliedReportingOverflow(by: height).overflow == false,
-              width * height <= maximumPixelCount else {
+              width.multipliedReportingOverflow(by: height).overflow == false else {
             throw ClipboardImageProcessingError.dimensionsTooLarge
         }
 
+        let outputMaximumDimension = maximumOutputDimension(width: width, height: height)
+
         let normalizedOptions: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceThumbnailMaxPixelSize: maximumDimension,
+            kCGImageSourceThumbnailMaxPixelSize: outputMaximumDimension,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceShouldCacheImmediately: true,
         ]
@@ -164,6 +173,18 @@ enum ClipboardImageProcessor {
             byteCount: pngData.count,
             contentHash: contentHash(for: pngData)
         )
+    }
+
+    static func maximumOutputDimension(width: Int, height: Int) -> Int {
+        guard width > 0, height > 0 else { return 1 }
+        let largestDimension = max(width, height)
+        let pixelCount = Double(width) * Double(height)
+        guard pixelCount > Double(maximumPixelCount) else {
+            return min(largestDimension, maximumDimension)
+        }
+
+        let scale = sqrt(Double(maximumPixelCount) / pixelCount)
+        return max(Int((Double(largestDimension) * scale).rounded(.down)), 1)
     }
 
     static func contentHash(for data: Data) -> String {

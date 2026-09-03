@@ -53,6 +53,68 @@ extension ClipboardStoreTests {
         XCTAssertTrue(store.items.contains { $0.text == "pinned" })
     }
 
+    func testProspectiveHistoryLimitDeletionCountDoesNotMutateHistory() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let now = Date()
+        storage.save(
+            (0..<12).map { index in
+                let timestamp = now.addingTimeInterval(TimeInterval(-index))
+                return ClipboardItem(
+                    text: "clip-\(index)",
+                    createdAt: timestamp,
+                    lastCopiedAt: timestamp
+                )
+            }
+        )
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: storage,
+            defaults: makeDefaults()
+        )
+        let originalItems = store.items
+
+        XCTAssertEqual(store.prospectiveDeletionCount(historyLimit: 10), 2)
+        XCTAssertEqual(store.prospectiveDeletionCount(historyLimit: 200), 0)
+        XCTAssertEqual(store.items, originalItems)
+        XCTAssertEqual(store.historyLimit, 50)
+    }
+
+    func testProspectiveRetentionDeletionCountMatchesAppliedPolicy() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let oldDate = now.addingTimeInterval(-2 * 24 * 60 * 60)
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        storage.save([
+            ClipboardItem(text: "old", createdAt: oldDate, lastCopiedAt: oldDate),
+            ClipboardItem(
+                text: "old pinned",
+                createdAt: oldDate,
+                lastCopiedAt: oldDate,
+                isPinned: true
+            ),
+            ClipboardItem(text: "recent", createdAt: now, lastCopiedAt: now),
+        ])
+        let defaults = makeDefaults()
+        defaults.set(ClipboardRetentionPolicy.never.rawValue, forKey: "retentionPolicy")
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: storage,
+            defaults: defaults,
+            clock: ClipboardStoreClock(now: { now }, sleep: { _ in })
+        )
+        let originalItems = store.items
+
+        XCTAssertEqual(
+            store.prospectiveDeletionCount(retentionPolicy: .oneDay, now: now),
+            1
+        )
+        XCTAssertEqual(store.items, originalItems)
+
+        store.setRetentionPolicy(.oneDay)
+
+        XCTAssertEqual(Set(store.items.map(\.text)), ["old pinned", "recent"])
+        XCTAssertEqual(defaults.string(forKey: "retentionPolicy"), "oneDay")
+    }
+
     func testTogglePinDoesNotTrimJustUnpinnedItem() throws {
         let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
         let now = Date()
@@ -224,7 +286,7 @@ extension ClipboardStoreTests {
         XCTAssertEqual(store.captureWarning, independentCaptureWarning)
     }
 
-    func testManualClearRemovesPinnedAndUnpinnedItemsWhenRetentionIsDisabled() throws {
+    func testManualClearRemovesPinnedAndUnpinnedItemsWhenRetentionIsDisabled() async throws {
         let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
         let defaults = makeDefaults()
         defaults.set(false, forKey: "keepPinnedOnClear")
@@ -239,10 +301,69 @@ extension ClipboardStoreTests {
             sourceApplicationProvider: { nil }
         )
 
-        store.clearHistory()
+        await store.clearHistory()
 
         XCTAssertTrue(store.items.isEmpty)
         XCTAssertTrue(storage.load().isEmpty)
+    }
+
+    func testManualClearPurgesClipboardBackups() async throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        storage.save([ClipboardItem(text: "clear me")])
+        _ = try storage.backup(storage.load(), reason: "pre-import")
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: storage,
+            defaults: makeDefaults(),
+            sourceApplicationProvider: { nil }
+        )
+        XCTAssertEqual(store.backupInventory.count, 1)
+
+        await store.clearHistory()
+
+        XCTAssertTrue(storage.load().isEmpty)
+        XCTAssertEqual(store.backupInventory, .empty)
+        XCTAssertEqual(try storage.backupInventory(), .empty)
+    }
+
+    func testDeleteBackupsUpdatesVisibleInventoryWithoutClearingHistory() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        storage.save([ClipboardItem(text: "keep me")])
+        _ = try storage.backup(storage.load(), reason: "pre-import")
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: storage,
+            defaults: makeDefaults(),
+            sourceApplicationProvider: { nil }
+        )
+        XCTAssertEqual(store.backupLocation, storage.fileURL.deletingLastPathComponent())
+
+        store.deleteBackups()
+
+        XCTAssertEqual(store.items.map(\.text), ["keep me"])
+        XCTAssertEqual(store.backupInventory, .empty)
+        XCTAssertEqual(try storage.backupInventory(), .empty)
+    }
+
+    func testBackupPurgeFailureDoesNotUndoManualClearAndSurfacesError() async throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        storage.save([ClipboardItem(text: "clear me")])
+        _ = try storage.backup(storage.load(), reason: "pre-import")
+        let defaults = makeDefaults()
+        defaults.set(false, forKey: "keepPinnedOnClear")
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: FailingBackupPurgeRepository(storage: storage),
+            defaults: defaults,
+            sourceApplicationProvider: { nil }
+        )
+
+        await store.clearHistory()
+
+        XCTAssertTrue(store.items.isEmpty)
+        XCTAssertTrue(storage.load().isEmpty)
+        XCTAssertEqual(try storage.backupInventory().count, 1)
+        XCTAssertTrue(store.storageErrorMessage?.contains("backups could not be deleted") == true)
     }
 
     func testUnpinningAtHistoryLimitTrimsExcessItems() throws {
@@ -268,6 +389,37 @@ extension ClipboardStoreTests {
 
         XCTAssertEqual(store.items.filter { !$0.isPinned }.count, 10)
         XCTAssertTrue(store.items.contains { $0.text == "pinned" && !$0.isPinned })
+    }
+
+    func testPinningBeyondTransferLimitWarnsAndUnpinAllRecovers() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let pinnedItems = (0..<ClipboardStorage.maximumImportedItems).map { index in
+            ClipboardItem(text: "pinned-\(index)", isPinned: true)
+        }
+        let itemToPin = ClipboardItem(text: "pin me")
+        storage.save(pinnedItems + [itemToPin])
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: storage,
+            defaults: makeDefaults(),
+            sourceApplicationProvider: { nil }
+        )
+
+        store.togglePin(try XCTUnwrap(store.items.first(where: { $0.id == itemToPin.id })))
+
+        XCTAssertEqual(store.items.count, 1_001)
+        XCTAssertEqual(
+            store.captureWarning,
+            "History cannot be exported: 1,001 clips exceeds the 1,000-clip export limit. "
+                + "Unpin or delete clips, then export again."
+        )
+        XCTAssertEqual(store.prospectiveUnpinAllDeletionCount(), 951)
+
+        store.unpinAll()
+
+        XCTAssertEqual(store.items.count, 50)
+        XCTAssertTrue(store.items.allSatisfy { !$0.isPinned })
+        XCTAssertNil(store.captureWarning)
     }
 
     func testSuccessfulTransformedCopyClearsOnlyItsStorageIssue() throws {
@@ -322,5 +474,185 @@ extension ClipboardStoreTests {
         XCTAssertNil(item.rtfData)
         XCTAssertNil(item.htmlData)
         XCTAssertFalse(item.hasRichText)
+    }
+
+    func testBulkPinUnpinAndDeleteApplyToExactSelection() async throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let first = ClipboardItem(text: "first")
+        let second = ClipboardItem(text: "second")
+        let untouched = ClipboardItem(text: "untouched")
+        storage.save([first, second, untouched])
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: storage,
+            defaults: makeDefaults(),
+            sourceApplicationProvider: { nil }
+        )
+        let selectedIDs: Set<ClipboardItem.ID> = [first.id, second.id]
+
+        store.setPinned(true, ids: selectedIDs)
+        XCTAssertTrue(
+            store.items.filter { selectedIDs.contains($0.id) }.allSatisfy(\.isPinned)
+        )
+        XCTAssertFalse(try XCTUnwrap(store.items.first { $0.id == untouched.id }).isPinned)
+
+        store.setPinned(false, ids: [first.id])
+        XCTAssertFalse(try XCTUnwrap(store.items.first { $0.id == first.id }).isPinned)
+        XCTAssertTrue(try XCTUnwrap(store.items.first { $0.id == second.id }).isPinned)
+
+        let didDeleteSelection = await store.delete(ids: selectedIDs)
+        XCTAssertTrue(didDeleteSelection)
+        XCTAssertEqual(store.items.map(\.id), [untouched.id])
+        XCTAssertEqual(storage.load().map(\.id), [untouched.id])
+    }
+
+    func testDeleteUpdatesMemoryBeforeOffMainPersistenceCompletes() async throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let item = ClipboardItem(text: "delete without blocking UI")
+        storage.save([item])
+        let repository = BlockingSaveRepository(storage: storage)
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: repository,
+            defaults: makeDefaults(),
+            sourceApplicationProvider: { nil }
+        )
+        repository.blockNextSave()
+
+        let deletion = Task { await store.delete(item) }
+        for _ in 0..<100 where !repository.isSaveBlocked {
+            await Task.yield()
+        }
+
+        XCTAssertTrue(repository.isSaveBlocked)
+        XCTAssertTrue(store.items.isEmpty)
+        XCTAssertEqual(storage.load().map(\.id), [item.id])
+
+        repository.allowSave()
+        let didDelete = await deletion.value
+        XCTAssertTrue(didDelete)
+        XCTAssertTrue(storage.load().isEmpty)
+    }
+}
+
+struct FailingBackupPurgeRepository: ClipboardStoreRepository {
+    let storage: ClipboardStorage
+
+    var fileURL: URL { storage.fileURL }
+
+    func loadResult() -> Result<[ClipboardItem], ClipboardStorageError> {
+        storage.loadResult()
+    }
+
+    func saveValidated(_ items: [ClipboardItem]) throws -> [ClipboardItem] {
+        try storage.saveValidated(items)
+    }
+
+    func backup(_ items: [ClipboardItem], reason: String) throws -> URL {
+        try storage.backup(items, reason: reason)
+    }
+
+    func backupInventory() throws -> ClipboardBackupInventory {
+        try storage.backupInventory()
+    }
+
+    func purgeBackups() throws {
+        throw CocoaError(.fileWriteNoPermission)
+    }
+
+    func export(_ items: [ClipboardItem], to url: URL) throws {
+        try storage.export(items, to: url)
+    }
+
+    func importItems(from url: URL) throws -> [ClipboardItem] {
+        try storage.importItems(from: url)
+    }
+
+    func importItems(data: Data) throws -> [ClipboardItem] {
+        try storage.importItems(data: data)
+    }
+
+    func imageData(for item: ClipboardItem) -> Data? {
+        storage.imageData(for: item)
+    }
+
+    func thumbnailDataRepairingIfNeeded(for item: ClipboardItem) -> ClipboardThumbnailResult? {
+        storage.thumbnailDataRepairingIfNeeded(for: item)
+    }
+}
+
+private final class BlockingSaveRepository: ClipboardStoreRepository, @unchecked Sendable {
+    let storage: ClipboardStorage
+    private let lock = NSLock()
+    private let proceed = DispatchSemaphore(value: 0)
+    private var shouldBlock = false
+    private var saveBlocked = false
+
+    init(storage: ClipboardStorage) {
+        self.storage = storage
+    }
+
+    var fileURL: URL { storage.fileURL }
+
+    var isSaveBlocked: Bool {
+        lock.withLock { saveBlocked }
+    }
+
+    func blockNextSave() {
+        lock.withLock { shouldBlock = true }
+    }
+
+    func allowSave() {
+        proceed.signal()
+    }
+
+    func loadResult() -> Result<[ClipboardItem], ClipboardStorageError> {
+        storage.loadResult()
+    }
+
+    func saveValidated(_ items: [ClipboardItem]) throws -> [ClipboardItem] {
+        let block = lock.withLock {
+            guard shouldBlock else { return false }
+            shouldBlock = false
+            saveBlocked = true
+            return true
+        }
+        if block {
+            proceed.wait()
+            lock.withLock { saveBlocked = false }
+        }
+        return try storage.saveValidated(items)
+    }
+
+    func backup(_ items: [ClipboardItem], reason: String) throws -> URL {
+        try storage.backup(items, reason: reason)
+    }
+
+    func backupInventory() throws -> ClipboardBackupInventory {
+        try storage.backupInventory()
+    }
+
+    func purgeBackups() throws {
+        try storage.purgeBackups()
+    }
+
+    func export(_ items: [ClipboardItem], to url: URL) throws {
+        try storage.export(items, to: url)
+    }
+
+    func importItems(from url: URL) throws -> [ClipboardItem] {
+        try storage.importItems(from: url)
+    }
+
+    func importItems(data: Data) throws -> [ClipboardItem] {
+        try storage.importItems(data: data)
+    }
+
+    func imageData(for item: ClipboardItem) -> Data? {
+        storage.imageData(for: item)
+    }
+
+    func thumbnailDataRepairingIfNeeded(for item: ClipboardItem) -> ClipboardThumbnailResult? {
+        storage.thumbnailDataRepairingIfNeeded(for: item)
     }
 }

@@ -462,7 +462,7 @@ final class PasteTargetControllerTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
         let store = ClipboardStore(
-            pasteboard: NSPasteboard(name: .init("PasteTargetControllerTests-\(UUID().uuidString)")),
+            pasteboard: StubStorePasteboard(),
             storage: storage,
             defaults: defaults,
             sourceApplicationProvider: { nil }

@@ -220,6 +220,7 @@ extension ClipboardStoreTests {
         let pinned = ClipboardItem(text: "pinned", isPinned: true)
         let unpinned = ClipboardItem(text: "unpinned")
         storage.save([pinned, unpinned])
+        _ = try storage.backup(storage.load(), reason: "pre-import")
         let store = ClipboardStore(
             pasteboard: makePasteboard(),
             storage: storage,
@@ -229,6 +230,31 @@ extension ClipboardStoreTests {
 
         XCTAssertEqual(store.items.count, 1)
         XCTAssertEqual(store.items.first?.text, "pinned")
+        XCTAssertEqual(try storage.backupInventory(), .empty)
+    }
+
+    func testQuitBackupPurgeFailureKeepsCompletedHistoryCleanup() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let defaults = makeDefaults()
+        defaults.set(true, forKey: "clearUnpinnedOnQuit")
+        storage.save([
+            ClipboardItem(text: "pinned", isPinned: true),
+            ClipboardItem(text: "unpinned"),
+        ])
+        _ = try storage.backup(storage.load(), reason: "pre-import")
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: FailingBackupPurgeRepository(storage: storage),
+            defaults: defaults,
+            sourceApplicationProvider: { nil }
+        )
+
+        XCTAssertFalse(store.clearUnpinnedHistoryOnQuitIfNeeded())
+
+        XCTAssertEqual(store.items.map(\.text), ["pinned"])
+        XCTAssertEqual(storage.load().map(\.text), ["pinned"])
+        XCTAssertEqual(try storage.backupInventory().count, 1)
+        XCTAssertTrue(store.storageErrorMessage?.contains("backups could not be deleted") == true)
     }
 
     func testClearUnpinnedOnQuitKeepsLiveCapturedPinnedImageFilesReadable() async throws {
@@ -280,10 +306,33 @@ extension ClipboardStoreTests {
         let pinned = ClipboardItem(text: "pinned", isPinned: true)
         let unpinned = ClipboardItem(text: "unpinned")
         storage.save([pinned, unpinned])
+        _ = try storage.backup(storage.load(), reason: "pre-import")
 
         ClipboardStore.clearUnpinnedHistoryOnQuitIfNeeded(storage: storage, defaults: defaults)
 
         let remaining = storage.load()
         XCTAssertEqual(remaining.map(\.text), ["pinned"])
+        XCTAssertEqual(try storage.backupInventory(), .empty)
+    }
+
+    func testStaticQuitPurgeFailureKeepsCompletedHistoryCleanup() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let defaults = makeDefaults()
+        defaults.set(true, forKey: "clearUnpinnedOnQuit")
+        storage.save([
+            ClipboardItem(text: "pinned", isPinned: true),
+            ClipboardItem(text: "unpinned"),
+        ])
+        _ = try storage.backup(storage.load(), reason: "pre-import")
+
+        XCTAssertFalse(
+            ClipboardStore.clearUnpinnedHistoryOnQuitIfNeeded(
+                storage: FailingBackupPurgeRepository(storage: storage),
+                defaults: defaults
+            )
+        )
+
+        XCTAssertEqual(storage.load().map(\.text), ["pinned"])
+        XCTAssertEqual(try storage.backupInventory().count, 1)
     }
 }

@@ -15,12 +15,15 @@ QA notes.
 | Open from the global shortcut | Search is focused; the first visible clip is the accessibility-focused selected row |
 | Press Down/Up with search focused | VoiceOver moves to and announces the adjacent visually displayed row, including preview, metadata, and selected state |
 | Cross Pinned/History boundary | Announcement order matches the pinned-first visual order |
-| Press Return | The selected clip is used and its row announces the copied state |
+| Press Return or Command-1 through Command-9 | The chosen clip is used in pinned-first display order and its row announces the copied state |
+| Press Shift-Command-V on a text clip | Only the plain-text representation is copied |
 | Invoke Copy clip action | Clip is copied without moving accessibility focus away from the row |
 | Invoke Pin/Unpin action | Action name reflects the current pin state and the moved row remains selected/visible |
 | Invoke Delete action | Focus moves to the next row, or the previous row when the last row is removed |
 | Type in Search | Normal text editing remains available; unmodified P/Delete edit text rather than acting on clips |
-| Press Command-P / Command-Delete | Selected clip is changed without inserting/removing search characters |
+| Shift-click / Command-click rows | A contiguous range is selected or one row is toggled; every selected row exposes the selected trait |
+| Use the selected-clips actions | Pin and Unpin affect the selection; Delete names the exact count and requires confirmation |
+| Press Command-P / Command-Delete | The current selection is changed without inserting/removing search characters; bulk deletion requires confirmation |
 | Enable Reduce Motion | Reordering and selection scrolling occur without animated motion |
 | Empty and no-results states | VoiceOver announces the specific empty-state explanation |
 | Menu-bar panel | “Open main window” is discoverable |

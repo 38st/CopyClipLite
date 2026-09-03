@@ -73,6 +73,7 @@ struct ClipboardStorage: @unchecked Sendable {
     static let maximumImportedTextCharacters = 20_000
     static let maximumImportedImageBytes = 10 * 1024 * 1024
     static let maximumImportedRichTextBytes = 10 * 1024 * 1024
+    private static let maximumRetainedBackups = 5
 
     let fileURL: URL
     let imageDirectoryURL: URL
@@ -217,9 +218,12 @@ struct ClipboardStorage: @unchecked Sendable {
     }
 
     func export(_ items: [ClipboardItem], to url: URL) throws {
+        lock.lock()
+        defer { lock.unlock() }
+
         guard items.count <= Self.maximumImportedItems else {
             throw ClipboardStorageError.incompatibleExport(
-                "the same version accepts at most \(Self.maximumImportedItems) clips"
+                ClipboardTransferCodec.itemLimitExceededReason(itemCount: items.count)
             )
         }
         let portableItems = try items.map(imageSidecars.portableItem)
@@ -228,6 +232,10 @@ struct ClipboardStorage: @unchecked Sendable {
         try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
+    // Deliberately unlocked. This reads a caller-supplied file outside the store and
+    // decodes it; it never touches the history manifest or the image sidecars. Taking
+    // the store lock here would make an import wait on an in-flight save, which
+    // deadlocks the pending-persist-during-import path.
     func importItems(from url: URL) throws -> [ClipboardItem] {
         let resourceValues = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
         guard resourceValues.isRegularFile == true else {
@@ -277,7 +285,31 @@ struct ClipboardStorage: @unchecked Sendable {
         let data = try encoder.encode(document)
         try data.write(to: backupURL, options: [.atomic])
         try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backupURL.path)
+        try removeExcessBackups(
+            matching: Self.isPreImportBackup,
+            keeping: Self.maximumRetainedBackups
+        )
         return backupURL
+    }
+
+    func backupInventory() throws -> ClipboardBackupInventory {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let urls = try backupURLs()
+        return ClipboardBackupInventory(
+            urls: urls,
+            totalByteCount: try urls.reduce(0) { try $0 + byteCount(of: $1) }
+        )
+    }
+
+    func purgeBackups() throws {
+        lock.lock()
+        defer { lock.unlock() }
+
+        for url in try backupURLs() {
+            try fileManager.removeItem(at: url)
+        }
     }
 
     private func writeHistory(_ items: [ClipboardItem]) throws {
@@ -339,7 +371,82 @@ struct ClipboardStorage: @unchecked Sendable {
             return nil
         }
         try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backupURL.path)
+        try? removeExcessBackups(
+            matching: Self.isRecoveryBackup,
+            keeping: Self.maximumRetainedBackups
+        )
         return recoveryURL
+    }
+
+    private func backupURLs() throws -> [URL] {
+        try fileManager.contentsOfDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            includingPropertiesForKeys: [
+                .contentModificationDateKey,
+                .isDirectoryKey,
+                .isRegularFileKey,
+            ],
+            options: [.skipsHiddenFiles]
+        ).filter { url in
+            Self.isPreImportBackup(url) || Self.isRecoveryBackup(url)
+        }
+    }
+
+    private func removeExcessBackups(
+        matching predicate: (URL) -> Bool,
+        keeping retainedCount: Int
+    ) throws {
+        let matchingURLs = try backupURLs().filter(predicate)
+        let sortedURLs = try matchingURLs.sorted { lhs, rhs in
+            let lhsDate = try lhs.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate ?? .distantPast
+            let rhsDate = try rhs.resourceValues(forKeys: [.contentModificationDateKey])
+                .contentModificationDate ?? .distantPast
+            if lhsDate == rhsDate {
+                return lhs.lastPathComponent > rhs.lastPathComponent
+            }
+            return lhsDate > rhsDate
+        }
+        for url in sortedURLs.dropFirst(retainedCount) {
+            try fileManager.removeItem(at: url)
+        }
+    }
+
+    private func byteCount(of url: URL) throws -> Int64 {
+        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        if values.isRegularFile == true {
+            return Int64(values.fileSize ?? 0)
+        }
+
+        guard let enumerator = fileManager.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return 0
+        }
+        var total: Int64 = 0
+        for case let childURL as URL in enumerator {
+            let childValues = try childURL.resourceValues(
+                forKeys: [.isRegularFileKey, .fileSizeKey]
+            )
+            if childValues.isRegularFile == true {
+                total += Int64(childValues.fileSize ?? 0)
+            }
+        }
+        return total
+    }
+
+    private static func isPreImportBackup(_ url: URL) -> Bool {
+        let name = url.lastPathComponent
+        guard name.hasPrefix("clipboard-history.pre-import-"),
+              name.hasSuffix(".json") else { return false }
+        return (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+    }
+
+    private static func isRecoveryBackup(_ url: URL) -> Bool {
+        guard url.lastPathComponent.hasPrefix("Recovery-") else { return false }
+        return (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
     }
 
     private static let backupTimestampFormatter: DateFormatter = {

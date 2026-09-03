@@ -79,6 +79,9 @@ final class ClipboardPanelKeyboardBridgeTests: XCTestCase {
             (UInt16(kVK_ANSI_KeypadEnter), nil, [], .copySelected),
             (UInt16(kVK_ANSI_F), "f", .command, .focusSearch),
             (UInt16(kVK_ANSI_P), "p", .command, .togglePinSelected),
+            (UInt16(kVK_ANSI_V), "v", [.command, .shift], .copySelectedWithoutFormatting),
+            (UInt16(kVK_ANSI_1), "1", .command, .quickSelect(1)),
+            (UInt16(kVK_ANSI_9), "9", .command, .quickSelect(9)),
             (UInt16(kVK_Delete), nil, .command, .deleteSelected),
             (UInt16(kVK_ForwardDelete), nil, .command, .deleteSelected),
         ]
@@ -150,6 +153,8 @@ final class ClipboardPanelKeyboardBridgeTests: XCTestCase {
             (UInt16(kVK_Delete), nil, .command, .deleteSelected),
             (UInt16(kVK_ForwardDelete), nil, .command, .deleteSelected),
             (UInt16(kVK_ANSI_F), "f", .command, .focusSearch),
+            (UInt16(kVK_ANSI_1), "1", .command, .quickSelect(1)),
+            (UInt16(kVK_ANSI_V), "v", [.command, .shift], .copySelectedWithoutFormatting),
         ]
 
         for (keyCode, characters, modifiers, expectedAction) in cases {
@@ -198,6 +203,7 @@ final class ClipboardPanelKeyboardBridgeTests: XCTestCase {
         let cases: [(UInt16, String, ClipboardPanelKeyAction)] = [
             (UInt16(kVK_ANSI_F), "f", .focusSearch),
             (UInt16(kVK_ANSI_P), "p", .togglePinSelected),
+            (UInt16(kVK_ANSI_1), "1", .quickSelect(1)),
             (UInt16(kVK_Delete), "\u{8}", .deleteSelected),
         ]
 
@@ -254,6 +260,15 @@ final class ClipboardPanelKeyboardBridgeTests: XCTestCase {
                     keyCode: UInt16(kVK_ANSI_F),
                     characters: "f",
                     modifiers: [.command, .shift]
+                )
+            )
+        )
+        XCTAssertNil(
+            ClipboardPanelKeyRouting.action(
+                for: input(
+                    keyCode: UInt16(kVK_ANSI_0),
+                    characters: "0",
+                    modifiers: .command
                 )
             )
         )

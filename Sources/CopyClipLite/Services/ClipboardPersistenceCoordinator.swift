@@ -75,7 +75,17 @@ final class ClipboardPersistenceCoordinator: @unchecked Sendable {
         queue.asyncAfter(deadline: .now() + 0.15, execute: workItem)
     }
 
-    func flush(_ snapshot: [ClipboardItem]) throws -> [ClipboardItem] {
+    func flush(_ snapshot: [ClipboardItem]) async throws -> [ClipboardItem] {
+        invalidateScheduledSave()
+        let storage = storage
+        return try await withCheckedThrowingContinuation { continuation in
+            queue.async {
+                continuation.resume(with: Result { try storage.saveValidated(snapshot) })
+            }
+        }
+    }
+
+    func flushSynchronously(_ snapshot: [ClipboardItem]) throws -> [ClipboardItem] {
         invalidateScheduledSave()
         return try queue.sync { try storage.saveValidated(snapshot) }
     }

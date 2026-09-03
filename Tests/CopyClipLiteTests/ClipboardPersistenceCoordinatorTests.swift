@@ -32,7 +32,7 @@ final class ClipboardPersistenceCoordinatorTests: XCTestCase {
             XCTFail("Invalidated delayed save must not complete")
         }
 
-        let flushed = try coordinator.flush([ClipboardItem(text: "flushed")])
+        let flushed = try await coordinator.flush([ClipboardItem(text: "flushed")])
         try await Task.sleep(nanoseconds: 250_000_000)
 
         XCTAssertEqual(flushed.map(\.text), ["flushed"])

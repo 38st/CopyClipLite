@@ -174,6 +174,44 @@ final class ClipboardImageProcessorTests: XCTestCase {
         )
     }
 
+    func testTwentyFourMegapixelPhotoIsDownscaledIntoOutputBudget() throws {
+        let sourceWidth = 6_000
+        let sourceHeight = 4_000
+        let png = try makeSolidPNGData(width: sourceWidth, height: sourceHeight)
+
+        let payload = try ClipboardImageProcessor.process(
+            ClipboardImageCandidate(data: png, isPNG: true)
+        )
+
+        XCTAssertLessThan(payload.width, sourceWidth)
+        XCTAssertLessThan(payload.height, sourceHeight)
+        XCTAssertLessThanOrEqual(
+            payload.width * payload.height,
+            ClipboardImageProcessor.maximumPixelCount
+        )
+        XCTAssertEqual(
+            Double(payload.width) / Double(payload.height),
+            Double(sourceWidth) / Double(sourceHeight),
+            accuracy: 0.001
+        )
+    }
+
+    func testOutputDimensionCalculationPreservesReasonableImagesAndBoundsLargeOnes() {
+        XCTAssertEqual(
+            ClipboardImageProcessor.maximumOutputDimension(width: 4_000, height: 3_000),
+            4_000
+        )
+        let downscaledMaximum = ClipboardImageProcessor.maximumOutputDimension(
+            width: 6_000,
+            height: 4_000
+        )
+        let scale = Double(downscaledMaximum) / 6_000
+        XCTAssertLessThanOrEqual(
+            Int(6_000 * scale) * Int(4_000 * scale),
+            ClipboardImageProcessor.maximumPixelCount
+        )
+    }
+
     private func makePNGData(width: Int, height: Int) throws -> Data {
         let bitmap = try makeBitmap(width: width, height: height)
         return try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))

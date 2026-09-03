@@ -53,7 +53,9 @@ final class UpdateCheckerTests: XCTestCase {
     }
 
     func testSuccessfulResponseWithNewerVersionReportsAvailableAsset() async throws {
-        let assetURL = try XCTUnwrap(URL(string: "https://example.com/CopyClip-Lite-macOS.zip"))
+        let assetURL = try XCTUnwrap(
+            URL(string: "https://github.com/38st/CopyClipLite/releases/download/v1.2.0/CopyClip-Lite-macOS.zip")
+        )
         let checker = try makeHTTPChecker(
             statusCode: 200,
             body: releaseJSON(version: "1.2.0", assetURL: assetURL),
@@ -167,6 +169,48 @@ final class UpdateCheckerTests: XCTestCase {
         assertFailure(checker, contains: "does not include the macOS app download")
     }
 
+    func testReleaseFeedRejectsUnsafeDownloadURLs() async throws {
+        for assetURL in [
+            "http://github.com/38st/CopyClipLite/releases/download/v1.2.0/CopyClip-Lite-macOS.zip",
+            "https://github.com.example.com/CopyClip-Lite-macOS.zip",
+            "https://example.com/CopyClip-Lite-macOS.zip",
+        ] {
+            let checker = try makeHTTPChecker(
+                statusCode: 200,
+                body: releaseJSON(
+                    version: "1.2.0",
+                    assetURL: try XCTUnwrap(URL(string: assetURL))
+                ),
+                currentVersion: "1.0.0"
+            )
+
+            checker.check()
+            await waitUntilNotChecking(checker)
+
+            assertFailure(checker, contains: "unsafe download address")
+        }
+    }
+
+    func testOpenRevalidatesReleaseFromCustomLoader() async throws {
+        let unsafeURL = try XCTUnwrap(
+            URL(string: "https://example.com/CopyClip-Lite-macOS.zip")
+        )
+        let checker = UpdateChecker(
+            loader: StubUpdateFeedLoader(
+                result: .success(CopyClipRelease(version: "2.0.0", url: unsafeURL))
+            ),
+            feedURL: try XCTUnwrap(URL(string: "https://api.github.com/releases/latest")),
+            currentVersion: "1.0.0"
+        )
+        checker.check()
+        await waitUntilNotChecking(checker)
+        XCTAssertEqual(checker.state, .updateAvailable(version: "2.0.0", url: unsafeURL))
+
+        checker.openAvailableUpdate()
+
+        assertFailure(checker, contains: "unsafe download address")
+    }
+
     func testMissingPublicFeedFailsTruthfully() {
         let checker = UpdateChecker(
             loader: StubUpdateFeedLoader(result: .failure(UpdateFeedError.invalidResponse)),
@@ -211,7 +255,7 @@ final class UpdateCheckerTests: XCTestCase {
         assetURL: URL? = nil
     ) -> String {
         let assetURL = assetURL?.absoluteString
-            ?? "https://example.com/CopyClip-Lite-macOS.zip"
+            ?? "https://github.com/38st/CopyClipLite/releases/download/v\(version)/CopyClip-Lite-macOS.zip"
         return """
         {
           "tag_name": "v\(version)",

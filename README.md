@@ -8,19 +8,19 @@ CopyClip Lite is a lightweight native macOS clipboard history utility. It runs f
 
 ## Features
 
-- Menu bar panel with searchable clipboard history
+- Menu bar panel with searchable clipboard history, including `app:name` source filters
 - Plain text plus RTF/HTML text capture; PNG, TIFF, JPEG, HEIC/HEIF, and Finder-copied local image capture through one normalized PNG pipeline
 - One-click copy back to the pasteboard
 - Native drag-out for plain/rich text and PNG images, plus validated JSON drop-import in Settings
-- Keyboard navigation with arrow keys and Return to copy the selected clip
+- Keyboard navigation with arrow keys, Return, and Command-1 through Command-9 quick selection
 - Global Option-Command-V hotkey to open clipboard search
-- Pin, delete, clear, timed pause, and quit controls
+- Paste-as-plain-text plus single and multi-select pin, unpin, delete, clear, timed pause, and quit controls
 - Quick filters for all clips, text, images, and pinned items
 - JSON persistence with a configurable unpinned history limit
 - Auto-clear options for unpinned clips: 24 hours, 7 days, 30 days, or never
 - Pinned clips are preserved until manually deleted or cleared
 - Optional clear of unpinned history when quitting
-- App ignore list for skipping future clips from selected apps
+- App ignore list seeded once with common credential managers and Apple's Passwords app
 - Versioned, same-version-compatible JSON history export and import
 - Strategy-aware validated import preview with merge/replace projections and automatic pre-import backups
 - Launch at Login setting for menu-bar startup
@@ -36,6 +36,8 @@ History files use owner-only permissions (`0600`) inside an owner-only directory
 
 CopyClip Lite skips pasteboard data marked concealed, transient, or auto-generated. Source-app exclusions are best effort because macOS does not expose guaranteed clipboard ownership; the app checks the active application both while polling and immediately before application switches are recorded.
 
+On first run, the source-exclusion list includes 1Password, Bitwarden, KeePassXC, Keeper, Dashlane, LastPass, Proton Pass, and Apple's Passwords app. You can review or change every exclusion in Settings → Privacy, and removed defaults stay removed.
+
 History is stored at:
 
 ```text
@@ -50,7 +52,7 @@ Image files are stored locally under:
 
 By default, CopyClip Lite keeps up to 50 unpinned clips and auto-clears unpinned clips after 7 days. Pinned clips never auto-clear.
 
-Text clips over 20,000 characters, encoded images over 10 MB, and images over approximately 16.8 megapixels are skipped with an in-app warning so unexpectedly large clipboard data cannot freeze the interface or exhaust storage.
+Text clips over 20,000 characters and encoded images over 10 MB are skipped with an in-app warning. Image inputs are capped at 30 MB and 16,384 pixels on either side; ordinary larger photos are proportionally downscaled into an approximately 16.8-megapixel output budget instead of being rejected.
 
 Rich text is retained only when a plain-text representation can be extracted, and each optional RTF/HTML representation is capped at 10 MB. Image copy-back requires PNG; macOS may synthesize additional representations for destination compatibility without CopyClip eagerly decoding a TIFF on the main thread.
 
@@ -115,9 +117,8 @@ The project does not require an Apple Developer Program account. Its selected re
 
 Published app versions use one `X.Y.Z` grammar, and release tags use the matching `vX.Y.Z` form. Tagged releases run tests and the same ad-hoc package verification through `.github/workflows/release.yml` without Apple secrets. The workflow creates a draft with the Gatekeeper warning, downloads the uploaded ZIP, verifies its SHA-256 against the locally verified artifact, and only then publishes the release. CI validates tests, the release contract, the package, and both `arm64` and `x86_64` slices on every pull request.
 
-Local builds intentionally omit the update feed and report that no public
-channel is configured. The tagged-release workflow embeds the GitHub Releases
-endpoint in the verified ad-hoc build.
+Local and installed source builds use the public GitHub Releases endpoint for
+update checks. Maintainers can override it with `COPYCLIP_UPDATE_FEED_URL`.
 
 The production bundle identifier is `io.github.38st.CopyClipLite`. On first launch after upgrading from the former local bundle identifier, CopyClip Lite migrates existing preferences; clipboard history remains in the same Application Support directory.
 

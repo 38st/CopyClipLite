@@ -157,29 +157,60 @@ final class ManualClipboardClock: @unchecked Sendable {
 }
 
 final class StubPasteboardWriter: ClipboardPasteboardWriting, @unchecked Sendable {
-    var result: ClipboardPasteboardWriteResult
-    private(set) var requests: [ClipboardPasteboardWriteRequest] = []
+    private let lock = NSLock()
+    private var storedResult: ClipboardPasteboardWriteResult
+    private var storedRequests: [ClipboardPasteboardWriteRequest] = []
 
     init(result: ClipboardPasteboardWriteResult) {
-        self.result = result
+        self.storedResult = result
+    }
+
+    var result: ClipboardPasteboardWriteResult {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedResult
+        }
+        set {
+            lock.lock()
+            storedResult = newValue
+            lock.unlock()
+        }
+    }
+
+    var requests: [ClipboardPasteboardWriteRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedRequests
     }
 
     func write(_ request: ClipboardPasteboardWriteRequest) -> ClipboardPasteboardWriteResult {
-        requests.append(request)
-        return result
+        lock.lock()
+        defer { lock.unlock() }
+        storedRequests.append(request)
+        return storedResult
     }
 }
 
 final class SelectiveFailurePasteboardWriter: ClipboardPasteboardWriting, @unchecked Sendable {
     let failingTypes: Set<String>
-    private(set) var requests: [ClipboardPasteboardWriteRequest] = []
+    private let lock = NSLock()
+    private var storedRequests: [ClipboardPasteboardWriteRequest] = []
 
     init(failingTypes: Set<String>) {
         self.failingTypes = failingTypes
     }
 
+    var requests: [ClipboardPasteboardWriteRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedRequests
+    }
+
     func write(_ request: ClipboardPasteboardWriteRequest) -> ClipboardPasteboardWriteResult {
-        requests.append(request)
+        lock.lock()
+        storedRequests.append(request)
+        lock.unlock()
         if request.required.contains(where: { failingTypes.contains($0.type) }) {
             return .failure
         }
@@ -190,6 +221,68 @@ final class SelectiveFailurePasteboardWriter: ClipboardPasteboardWriting, @unche
         return failedOptionalTypes.isEmpty
             ? .success
             : .degraded(optionalTypes: failedOptionalTypes)
+    }
+}
+
+final class StubStorePasteboard: ClipboardStorePasteboard {
+    private var storedValues: [NSPasteboard.PasteboardType: Data] = [:]
+    private(set) var changeCount = 0
+
+    var types: [NSPasteboard.PasteboardType]? {
+        storedValues.isEmpty ? nil : Array(storedValues.keys)
+    }
+
+    func data(forType dataType: NSPasteboard.PasteboardType) -> Data? {
+        storedValues[dataType]
+    }
+
+    func string(forType dataType: NSPasteboard.PasteboardType) -> String? {
+        storedValues[dataType].flatMap { String(data: $0, encoding: .utf8) }
+    }
+
+    @discardableResult
+    func clearContents() -> Int {
+        clearPasteboardContents()
+    }
+
+    @discardableResult
+    func clearPasteboardContents() -> Int {
+        storedValues.removeAll()
+        changeCount += 1
+        return changeCount
+    }
+
+    func writePasteboardItems(_ items: [NSPasteboardItem]) -> Bool {
+        guard let item = items.first else { return false }
+        for type in item.types {
+            if let data = item.data(forType: type) {
+                storedValues[type] = data
+            } else if let string = item.string(forType: type) {
+                storedValues[type] = Data(string.utf8)
+            }
+        }
+        changeCount += 1
+        return true
+    }
+
+    @discardableResult
+    func setData(_ data: Data, forType dataType: NSPasteboard.PasteboardType) -> Bool {
+        storedValues[dataType] = data
+        changeCount += 1
+        return true
+    }
+
+    @discardableResult
+    func setString(_ string: String, forType dataType: NSPasteboard.PasteboardType) -> Bool {
+        setData(Data(string.utf8), forType: dataType)
+    }
+
+    func writeObjects(_ objects: [NSPasteboardWriting]) -> Bool {
+        guard let url = objects.first as? NSURL,
+              let absoluteString = url.absoluteString else {
+            return false
+        }
+        return setString(absoluteString, forType: .fileURL)
     }
 }
 
@@ -227,8 +320,8 @@ final class ClipboardStoreTests: XCTestCase {
         return defaults
     }
 
-    func makePasteboard() -> NSPasteboard {
-        NSPasteboard(name: NSPasteboard.Name("CopyClipLiteTests-\(UUID().uuidString)"))
+    func makePasteboard() -> StubStorePasteboard {
+        StubStorePasteboard()
     }
 
     func makePasteControllerWithPermissionError(
@@ -393,7 +486,7 @@ final class ClipboardStoreTests: XCTestCase {
             await Task.yield()
         }
         XCTAssertTrue(store.isTransferBusy)
-        store.delete(existingItem)
+        await store.delete(existingItem)
         store.setHistoryLimit(10)
         XCTAssertFalse(store.copy(existingItem))
         XCTAssertTrue(store.items.contains { $0.id == existingItem.id })
@@ -447,18 +540,25 @@ final class ClipboardStoreTests: XCTestCase {
         let plan = store.importPlan(for: artifact)
         _ = try await store.importHistory(plan: plan, strategy: strategy)
 
-        let reloadedPasteboard = makePasteboard()
+        let writer = StubPasteboardWriter(result: .success)
         let reloadedStore = ClipboardStore(
-            pasteboard: reloadedPasteboard,
+            pasteboard: makePasteboard(),
             storage: storage,
             defaults: makeDefaults(),
-            sourceApplicationProvider: { nil }
+            sourceApplicationProvider: { nil },
+            pasteboardWriter: writer
         )
         let importedImage = try XCTUnwrap(
             reloadedStore.items.first(where: { $0.contentKind == .image })
         )
         XCTAssertTrue(reloadedStore.copy(importedImage))
-        try assertReadableImageData(reloadedPasteboard.data(forType: .png))
+        let pngRepresentation = try XCTUnwrap(
+            writer.requests.last?.required.first(where: { $0.type == NSPasteboard.PasteboardType.png.rawValue })
+        )
+        guard case let .data(copiedImageData) = pngRepresentation.value else {
+            return XCTFail("Expected image data in the pasteboard write request")
+        }
+        try assertReadableImageData(copiedImageData)
         switch strategy {
         case .merge:
             XCTAssertTrue(reloadedStore.items.contains { $0.text == "existing" })

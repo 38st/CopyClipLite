@@ -3,6 +3,43 @@ import Foundation
 import XCTest
 @testable import CopyClipLite
 
+private final class StorageOperationGate: @unchecked Sendable {
+    let entered = DispatchSemaphore(value: 0)
+    let proceed = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var enabled = false
+    private var hasBlocked = false
+
+    func enable() {
+        lock.withLock { enabled = true }
+    }
+
+    func visit(_ point: ClipboardStorageFaultPoint) {
+        guard point == .manifestWrite else { return }
+        let shouldBlock = lock.withLock {
+            guard enabled, !hasBlocked else { return false }
+            hasBlocked = true
+            return true
+        }
+        guard shouldBlock else { return }
+        entered.signal()
+        proceed.wait()
+    }
+}
+
+private final class StorageOperationResult<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: Result<Value, Error>?
+
+    func store(_ result: Result<Value, Error>) {
+        lock.withLock { self.result = result }
+    }
+
+    func get() -> Result<Value, Error>? {
+        lock.withLock { result }
+    }
+}
+
 final class ClipboardStorageTests: XCTestCase {
     private var tempDirectories: [URL] = []
 
@@ -251,6 +288,67 @@ final class ClipboardStorageTests: XCTestCase {
         XCTAssertNotNil(importedItem.image?.contentHash)
         XCTAssertNil(importedItem.image?.fileName)
         XCTAssertNil(importedItem.image?.thumbnailFileName)
+    }
+
+    func testExportWaitsForConcurrentStorageMutationWhileImportProceeds() throws {
+        let directory = try makeTemporaryDirectory()
+        let gate = StorageOperationGate()
+        let storage = ClipboardStorage(
+            appDirectory: directory.appendingPathComponent("Store"),
+            faultInjector: gate.visit
+        )
+        _ = storage.loadResult()
+        let item = ClipboardItem(
+            image: ClipboardImagePayload(
+                data: try makePNGData(width: 3, height: 3),
+                width: 3,
+                height: 3
+            )
+        )
+        try storage.saveValidated([item])
+        let loadedItems = storage.load()
+        let sourceStorage = ClipboardStorage(
+            appDirectory: directory.appendingPathComponent("Source")
+        )
+        sourceStorage.save([ClipboardItem(text: "imported")])
+        let importURL = directory.appendingPathComponent("import.json")
+        try sourceStorage.export(sourceStorage.load(), to: importURL)
+        let exportURL = directory.appendingPathComponent("export.json")
+        let saveFinished = DispatchSemaphore(value: 0)
+        let exportFinished = DispatchSemaphore(value: 0)
+        let importFinished = DispatchSemaphore(value: 0)
+        let exportResult = StorageOperationResult<Void>()
+        let importResult = StorageOperationResult<[ClipboardItem]>()
+
+        gate.enable()
+        DispatchQueue.global().async {
+            _ = try? storage.saveValidated(loadedItems)
+            saveFinished.signal()
+        }
+        XCTAssertEqual(gate.entered.wait(timeout: .now() + 2), .success)
+
+        DispatchQueue.global().async {
+            exportResult.store(Result { try storage.export(loadedItems, to: exportURL) })
+            exportFinished.signal()
+        }
+        DispatchQueue.global().async {
+            importResult.store(Result { try storage.importItems(from: importURL) })
+            importFinished.signal()
+        }
+
+        // Exporting reads the image sidecars, so it has to wait for a save that may be
+        // pruning them.
+        XCTAssertEqual(exportFinished.wait(timeout: .now() + 0.05), .timedOut)
+        // Importing only reads a caller-supplied file and decodes it, so it must not be
+        // held up by an in-flight save. Making it wait deadlocks an import that is
+        // started while a persist is still pending.
+        XCTAssertEqual(importFinished.wait(timeout: .now() + 2), .success)
+        gate.proceed.signal()
+
+        XCTAssertEqual(saveFinished.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(exportFinished.wait(timeout: .now() + 2), .success)
+        XCTAssertNoThrow(try exportResult.get()?.get())
+        XCTAssertEqual(try importResult.get()?.get().map(\.text), ["imported"])
     }
 
     func testImportRejectsExternalImagePathsBeforeTheyReachStorageWrites() throws {
@@ -765,10 +863,13 @@ final class ClipboardStorageTests: XCTestCase {
         }
 
         XCTAssertThrowsError(try storage.export(items, to: exportURL)) { error in
-            guard case .incompatibleExport = error as? ClipboardStorageError else {
-                XCTFail("Expected incompatible export, got \(error)")
-                return
-            }
+            XCTAssertEqual(
+                error as? ClipboardStorageError,
+                .incompatibleExport(
+                    "1,001 clips exceeds the 1,000-clip export limit. "
+                        + "Unpin or delete clips, then export again."
+                )
+            )
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: exportURL.path))
     }
@@ -788,6 +889,79 @@ final class ClipboardStorageTests: XCTestCase {
             from: Data(contentsOf: backupURL)
         )
         XCTAssertEqual(document.items.count, items.count)
+    }
+
+    func testPreImportBackupsAreCappedAtFiveMostRecentFiles() throws {
+        let directory = try makeTemporaryDirectory()
+        let storage = ClipboardStorage(appDirectory: directory)
+        var createdURLs: [URL] = []
+
+        for index in 0..<7 {
+            let url = try storage.backup(
+                [ClipboardItem(text: "backup-\(index)")],
+                reason: "pre-import"
+            )
+            createdURLs.append(url)
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date(timeIntervalSince1970: TimeInterval(index))],
+                ofItemAtPath: url.path
+            )
+        }
+
+        let inventory = try storage.backupInventory()
+        XCTAssertEqual(inventory.count, 5)
+        XCTAssertEqual(
+            Set(inventory.urls.map(\.lastPathComponent)),
+            Set(createdURLs.suffix(5).map(\.lastPathComponent))
+        )
+        XCTAssertGreaterThan(inventory.totalByteCount, 0)
+    }
+
+    func testRecoveryDirectoriesAreCappedAtFiveMostRecentBackups() throws {
+        let directory = try makeTemporaryDirectory()
+        let storage = ClipboardStorage(appDirectory: directory)
+        var recoveryURLs: [URL] = []
+
+        for index in 0..<7 {
+            try Data("broken-\(index)".utf8).write(to: storage.fileURL)
+            guard case let .failure(.invalidHistory(backupFileName)) = storage.loadResult() else {
+                return XCTFail("Expected invalid history to be quarantined")
+            }
+            let recoveryURL = directory.appendingPathComponent(try XCTUnwrap(backupFileName))
+            recoveryURLs.append(recoveryURL)
+            try FileManager.default.setAttributes(
+                [.modificationDate: Date(timeIntervalSince1970: TimeInterval(index))],
+                ofItemAtPath: recoveryURL.path
+            )
+        }
+
+        let inventory = try storage.backupInventory()
+        XCTAssertEqual(inventory.count, 5)
+        XCTAssertEqual(
+            Set(inventory.urls.map(\.lastPathComponent)),
+            Set(recoveryURLs.suffix(5).map(\.lastPathComponent))
+        )
+    }
+
+    func testBackupInventoryCountsBothKindsAndPurgeLeavesUnrelatedFiles() throws {
+        let directory = try makeTemporaryDirectory()
+        let storage = ClipboardStorage(appDirectory: directory)
+        let unrelatedURL = directory.appendingPathComponent("notes.txt")
+        try Data("keep".utf8).write(to: unrelatedURL)
+        _ = try storage.backup([ClipboardItem(text: "before import")], reason: "pre-import")
+        try Data("broken history".utf8).write(to: storage.fileURL)
+        guard case .failure(.invalidHistory) = storage.loadResult() else {
+            return XCTFail("Expected invalid history to create a recovery backup")
+        }
+
+        let inventory = try storage.backupInventory()
+        XCTAssertEqual(inventory.count, 2)
+        XCTAssertGreaterThan(inventory.totalByteCount, 0)
+
+        try storage.purgeBackups()
+
+        XCTAssertEqual(try storage.backupInventory(), .empty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: unrelatedURL.path))
     }
 
     func testNearLimitImageExportRoundTripsAndFirstAggregateOverflowPreservesDestination() throws {

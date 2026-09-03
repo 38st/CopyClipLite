@@ -32,6 +32,41 @@ private final class FaultInjectingPasteboard: ClipboardPasteboardAccess {
     }
 }
 
+private final class BlockingPasteboard: ClipboardPasteboardAccess, @unchecked Sendable {
+    let firstWriteStarted = DispatchSemaphore(value: 0)
+    let allowFirstWrite = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var writeCount = 0
+    private var storedChangeCount = 0
+
+    var changeCount: Int {
+        lock.withLock { storedChangeCount }
+    }
+
+    func clearPasteboardContents() -> Int {
+        lock.withLock {
+            storedChangeCount += 1
+            return storedChangeCount
+        }
+    }
+
+    func writePasteboardItems(_ items: [NSPasteboardItem]) -> Bool {
+        let invocation = lock.withLock {
+            writeCount += 1
+            return writeCount
+        }
+        if invocation == 1 {
+            firstWriteStarted.signal()
+            allowFirstWrite.wait()
+        }
+        return true
+    }
+
+    var attemptedWriteCount: Int {
+        lock.withLock { writeCount }
+    }
+}
+
 final class ClipboardPasteboardWriterTests: XCTestCase {
     func testFailedWriteRestoresLastBoundedClipboardOwnedByWriter() {
         let pasteboard = FaultInjectingPasteboard()
@@ -73,6 +108,31 @@ final class ClipboardPasteboardWriterTests: XCTestCase {
 
         XCTAssertEqual(pasteboard.attemptedStrings, ["12345", "new"])
         XCTAssertNil(pasteboard.currentString)
+    }
+
+    func testConcurrentWritesAreSerializedAroundRollbackState() {
+        let pasteboard = BlockingPasteboard()
+        let writer = SystemClipboardPasteboardWriter(pasteboard: pasteboard)
+        let firstFinished = DispatchSemaphore(value: 0)
+        let secondFinished = DispatchSemaphore(value: 0)
+
+        DispatchQueue.global().async {
+            _ = writer.write(self.request(text: "first"))
+            firstFinished.signal()
+        }
+        XCTAssertEqual(pasteboard.firstWriteStarted.wait(timeout: .now() + 2), .success)
+
+        DispatchQueue.global().async {
+            _ = writer.write(self.request(text: "second"))
+            secondFinished.signal()
+        }
+        XCTAssertEqual(secondFinished.wait(timeout: .now() + 0.05), .timedOut)
+        XCTAssertEqual(pasteboard.attemptedWriteCount, 1)
+
+        pasteboard.allowFirstWrite.signal()
+        XCTAssertEqual(firstFinished.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(secondFinished.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(pasteboard.attemptedWriteCount, 2)
     }
 
     private func request(text: String) -> ClipboardPasteboardWriteRequest {

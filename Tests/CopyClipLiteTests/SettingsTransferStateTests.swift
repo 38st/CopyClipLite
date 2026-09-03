@@ -180,11 +180,7 @@ final class SettingsTransferStateTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
         return ClipboardStore(
-            pasteboard: NSPasteboard(
-                name: NSPasteboard.Name(
-                    "CopyClipLite.SettingsTransferStateTests.\(UUID().uuidString)"
-                )
-            ),
+            pasteboard: StubStorePasteboard(),
             storage: storage,
             defaults: defaults,
             sourceApplicationProvider: { nil }

@@ -41,6 +41,10 @@ protocol ClipboardPasteboardAccess: AnyObject {
     func writePasteboardItems(_ items: [NSPasteboardItem]) -> Bool
 }
 
+protocol ClipboardStorePasteboard: ClipboardCapturePasteboard, ClipboardPasteboardAccess {
+    var types: [NSPasteboard.PasteboardType]? { get }
+}
+
 extension NSPasteboard: ClipboardPasteboardAccess {
     func clearPasteboardContents() -> Int {
         clearContents()
@@ -50,6 +54,8 @@ extension NSPasteboard: ClipboardPasteboardAccess {
         writeObjects(items)
     }
 }
+
+extension NSPasteboard: ClipboardStorePasteboard {}
 
 final class SystemClipboardPasteboardWriter: ClipboardPasteboardWriting, @unchecked Sendable {
     private struct PreparedItem {
@@ -68,6 +74,7 @@ final class SystemClipboardPasteboardWriter: ClipboardPasteboardWriting, @unchec
 
     private let pasteboard: any ClipboardPasteboardAccess
     private let maximumRollbackBytes: Int
+    private let lock = NSLock()
     private var ownedRollbackSnapshot: OwnedRollbackSnapshot?
 
     init(pasteboard: NSPasteboard) {
@@ -87,6 +94,9 @@ final class SystemClipboardPasteboardWriter: ClipboardPasteboardWriting, @unchec
     }
 
     func write(_ request: ClipboardPasteboardWriteRequest) -> ClipboardPasteboardWriteResult {
+        lock.lock()
+        defer { lock.unlock() }
+
         guard let prepared = prepare(request) else {
             return .failure
         }

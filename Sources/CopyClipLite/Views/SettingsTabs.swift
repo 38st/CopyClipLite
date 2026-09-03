@@ -3,9 +3,10 @@ import SwiftUI
 struct GeneralSettingsView: View {
     @ObservedObject var store: ClipboardStore
     @ObservedObject var loginItem: LoginItemController
+    @State private var pendingHistoryLimit: PendingHistoryLimit?
 
     private var historyLimit: Binding<Int> {
-        Binding(get: { store.historyLimit }, set: { store.setHistoryLimit($0) })
+        Binding(get: { store.historyLimit }, set: { requestHistoryLimit($0) })
     }
 
     private var launchAtLogin: Binding<Bool> {
@@ -47,17 +48,52 @@ struct GeneralSettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .confirmationDialog(
+            "Reduce Unpinned Clip Limit?",
+            isPresented: Binding(
+                get: { pendingHistoryLimit != nil },
+                set: { if !$0 { pendingHistoryLimit = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Apply New Limit", role: .destructive) {
+                guard let pendingHistoryLimit else { return }
+                store.setHistoryLimit(pendingHistoryLimit.limit)
+                self.pendingHistoryLimit = nil
+            }
+            Button("Cancel", role: .cancel) { pendingHistoryLimit = nil }
+        } message: {
+            if let pendingHistoryLimit {
+                Text(
+                    "This will permanently delete \(clipCountText(pendingHistoryLimit.deletedCount)) beyond the new \(pendingHistoryLimit.limit)-clip limit."
+                )
+            }
+        }
+    }
+
+    private func requestHistoryLimit(_ limit: Int) {
+        let deletedCount = store.prospectiveDeletionCount(historyLimit: limit)
+        guard deletedCount > 0 else {
+            store.setHistoryLimit(limit)
+            return
+        }
+        pendingHistoryLimit = PendingHistoryLimit(limit: limit, deletedCount: deletedCount)
     }
 }
 
 struct PrivacySettingsView: View {
     @ObservedObject var store: ClipboardStore
     let addIgnoredApplication: () -> Void
+    @State private var pendingRetentionPolicy: PendingRetentionPolicy?
+
+    private var retentionPolicy: Binding<ClipboardRetentionPolicy> {
+        Binding(get: { store.retentionPolicy }, set: { requestRetentionPolicy($0) })
+    }
 
     var body: some View {
         Form {
             Section("Retention") {
-                Picker("Auto-clear unpinned clips", selection: $store.retentionPolicy) {
+                Picker("Auto-clear unpinned clips", selection: retentionPolicy) {
                     ForEach(ClipboardRetentionPolicy.allCases) { policy in
                         Text(policy.title).tag(policy)
                     }
@@ -68,6 +104,10 @@ struct PrivacySettingsView: View {
             }
             Section("Source Exclusions") {
                 Text("macOS does not expose guaranteed clipboard ownership. CopyClip checks the active app at the instant a change is detected and also skips concealed or transient clipboard data.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Common credential managers are excluded on first run. You can remove or add apps here at any time.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -108,7 +148,54 @@ struct PrivacySettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .confirmationDialog(
+            "Change Auto-Clear Policy?",
+            isPresented: Binding(
+                get: { pendingRetentionPolicy != nil },
+                set: { if !$0 { pendingRetentionPolicy = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Apply Auto-Clear Policy", role: .destructive) {
+                guard let pendingRetentionPolicy else { return }
+                store.setRetentionPolicy(pendingRetentionPolicy.policy)
+                self.pendingRetentionPolicy = nil
+            }
+            Button("Cancel", role: .cancel) { pendingRetentionPolicy = nil }
+        } message: {
+            if let pendingRetentionPolicy {
+                Text(
+                    "This will permanently delete \(clipCountText(pendingRetentionPolicy.deletedCount)) under “\(pendingRetentionPolicy.policy.title)”."
+                )
+            }
+        }
     }
+
+    private func requestRetentionPolicy(_ policy: ClipboardRetentionPolicy) {
+        let deletedCount = store.prospectiveDeletionCount(retentionPolicy: policy)
+        guard deletedCount > 0 else {
+            store.setRetentionPolicy(policy)
+            return
+        }
+        pendingRetentionPolicy = PendingRetentionPolicy(
+            policy: policy,
+            deletedCount: deletedCount
+        )
+    }
+}
+
+private struct PendingHistoryLimit {
+    let limit: Int
+    let deletedCount: Int
+}
+
+private struct PendingRetentionPolicy {
+    let policy: ClipboardRetentionPolicy
+    let deletedCount: Int
+}
+
+private func clipCountText(_ count: Int) -> String {
+    count == 1 ? "1 clip" : "\(count) clips"
 }
 
 struct ShortcutSettingsView: View {
@@ -160,9 +247,14 @@ struct ShortcutSettingsView: View {
             Section("List Keyboard Controls") {
                 LabeledContent("Move selection", value: "↑ / ↓")
                 LabeledContent("Use selected clip", value: "Return")
-                LabeledContent("Pin or unpin", value: "⌘P")
-                LabeledContent("Delete selected clip", value: "⌘⌫")
+                LabeledContent("Use clip by position", value: "⌘1 – ⌘9")
+                LabeledContent("Copy as plain text", value: "⇧⌘V")
+                LabeledContent("Pin or unpin selection", value: "⌘P")
+                LabeledContent("Delete selection", value: "⌘⌫")
                 LabeledContent("Focus search", value: "⌘F")
+                Text("Shift-click selects a range. Command-click adds or removes one clip from the selection.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

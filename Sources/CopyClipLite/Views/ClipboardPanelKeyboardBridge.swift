@@ -8,6 +8,8 @@ enum ClipboardPanelKeyAction: Equatable {
     case deleteSelected
     case togglePinSelected
     case focusSearch
+    case copySelectedWithoutFormatting
+    case quickSelect(Int)
 }
 
 struct ClipboardPanelKeyInput {
@@ -53,12 +55,24 @@ enum ClipboardPanelKeyRouting {
             return .focusSearch
         }
 
+        if commandOnly,
+           let characters = input.charactersIgnoringModifiers,
+           let number = Int(characters),
+           (1...9).contains(number) {
+            return .quickSelect(number)
+        }
+
         if commandOnly, input.charactersIgnoringModifiers?.lowercased() == "p" {
             return .togglePinSelected
         }
 
         if commandOnly, input.keyCode == 51 || input.keyCode == 117 {
             return .deleteSelected
+        }
+
+        if normalizedModifiers == [.command, .shift],
+           input.charactersIgnoringModifiers?.lowercased() == "v" {
+            return .copySelectedWithoutFormatting
         }
 
         guard noModifiers else {

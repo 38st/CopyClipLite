@@ -1,5 +1,13 @@
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
+
+protocol ClipboardCapturePasteboard {
+    func data(forType dataType: NSPasteboard.PasteboardType) -> Data?
+    func string(forType dataType: NSPasteboard.PasteboardType) -> String?
+}
+
+extension NSPasteboard: ClipboardCapturePasteboard {}
 
 struct CapturedTextSnapshot: Sendable {
     let text: String
@@ -13,7 +21,7 @@ struct CapturedTextResult: Sendable {
 }
 
 enum ClipboardCaptureReader {
-    static func text(from pasteboard: NSPasteboard) -> CapturedTextResult {
+    static func text(from pasteboard: ClipboardCapturePasteboard) -> CapturedTextResult {
         let rawRTFData = pasteboard.data(forType: .rtf)
         let rawHTMLData = pasteboard.data(forType: .html)
         let rtfData = rawRTFData.flatMap {
@@ -50,7 +58,7 @@ enum ClipboardCaptureReader {
         )
     }
 
-    static func image(from pasteboard: NSPasteboard) -> ClipboardImageCandidate? {
+    static func image(from pasteboard: ClipboardCapturePasteboard) -> ClipboardImageCandidate? {
         var sources: [ClipboardImageCandidateSource] = []
         if let data = pasteboard.data(forType: .png) {
             sources.append(.data(data, isPNG: true))
@@ -69,11 +77,26 @@ enum ClipboardCaptureReader {
         }
         if let fileURLString = pasteboard.string(forType: .fileURL),
            let fileURL = URL(string: fileURLString),
-           fileURL.isFileURL {
+           fileURL.isFileURL,
+           isImageFile(fileURL) {
             sources.append(.fileURL(fileURL))
         }
         return sources.isEmpty ? nil : ClipboardImageCandidate(sources: sources)
     }
+
+    private static func isImageFile(_ url: URL) -> Bool {
+        let resourceType = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType
+        if resourceType?.conforms(to: .image) == true
+            || UTType(filenameExtension: url.pathExtension)?.conforms(to: .image) == true {
+            return true
+        }
+        return knownImageFileExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    private static let knownImageFileExtensions: Set<String> = [
+        "avif", "bmp", "gif", "heic", "heif", "icns", "jp2", "jpeg", "jpg", "png",
+        "psd", "tif", "tiff", "webp"
+    ]
 
     private static func attributedPlainText(
         data: Data?,

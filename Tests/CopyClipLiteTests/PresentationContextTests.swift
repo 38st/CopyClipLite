@@ -7,6 +7,11 @@ final class PresentationContextTests: XCTestCase {
         XCTAssertFalse(ClipboardPanelPresentationContext.mainWindow.showsOpenMainWindowButton)
     }
 
+    func testOnlyMenuBarPresentationResetsSearchAndFilterState() {
+        XCTAssertTrue(ClipboardPanelPresentationContext.menuBar.resetsSearchOnPresentation)
+        XCTAssertFalse(ClipboardPanelPresentationContext.mainWindow.resetsSearchOnPresentation)
+    }
+
     func testWelcomeUsesActiveShortcutFormatter() {
         XCTAssertEqual(
             WelcomeContent.hotkeyDetail(isRegistered: true, displayString: "⌃⌥K"),

@@ -4,7 +4,6 @@ enum TextTransformation: String, CaseIterable, Identifiable {
     case uppercase
     case lowercase
     case titleCase
-    case stripFormatting
 
     var id: String { rawValue }
 
@@ -13,7 +12,6 @@ enum TextTransformation: String, CaseIterable, Identifiable {
         case .uppercase: return "UPPERCASE"
         case .lowercase: return "lowercase"
         case .titleCase: return "Title Case"
-        case .stripFormatting: return "Strip Formatting"
         }
     }
 
@@ -22,7 +20,6 @@ enum TextTransformation: String, CaseIterable, Identifiable {
         case .uppercase: return "textformat.size"
         case .lowercase: return "textformat.size"
         case .titleCase: return "textformat.size"
-        case .stripFormatting: return "textformat.alt"
         }
     }
 
@@ -34,8 +31,6 @@ enum TextTransformation: String, CaseIterable, Identifiable {
             return text.lowercased()
         case .titleCase:
             return text.capitalized
-        case .stripFormatting:
-            return text
         }
     }
 }

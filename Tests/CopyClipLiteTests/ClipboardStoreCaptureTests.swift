@@ -184,6 +184,29 @@ extension ClipboardStoreTests {
         XCTAssertNotNil(store.captureWarning)
     }
 
+    func testFailedSpeculativeImageFileFallsBackToTextWithoutWarning() async throws {
+        let directory = try makeTemporaryDirectory()
+        let storage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Store"))
+        let invalidImageURL = directory.appendingPathComponent("invalid.png")
+        try Data("not an image".utf8).write(to: invalidImageURL)
+        let pasteboard = makePasteboard()
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: storage,
+            defaults: makeDefaults(),
+            sourceApplicationProvider: { nil }
+        )
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.setString(invalidImageURL.absoluteString, forType: .fileURL))
+        XCTAssertTrue(pasteboard.setString("preserve file label", forType: .string))
+
+        store.pollPasteboardForChanges()
+        try await waitForCapturedItem(in: store)
+
+        XCTAssertEqual(store.items.first?.text, "preserve file label")
+        XCTAssertNil(store.captureWarning)
+    }
+
     func testOversizedImageFallsBackToTheFrozenTextSnapshot() async throws {
         let pasteboard = makePasteboard()
         let store = ClipboardStore(
@@ -373,7 +396,7 @@ extension ClipboardStoreTests {
         XCTAssertEqual(store.items.first?.image?.height, 4)
     }
 
-    func testImageDragProviderOffersCanonicalPNGWithoutMutation() async throws {
+    func testImageDragProviderOffersCanonicalPNGWithoutMutation() throws {
         let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
         let pngData = try makePNGData(width: 2, height: 2)
         storage.save([
@@ -387,57 +410,20 @@ extension ClipboardStoreTests {
             defaults: makeDefaults()
         )
         let item = try XCTUnwrap(store.items.first)
+        let itemsBeforeDrag = store.items
         let provider = store.dragItemProvider(for: item)
 
         XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier))
-        let loadedData: Data = try await withCheckedThrowingContinuation { continuation in
-            provider.loadDataRepresentation(forTypeIdentifier: UTType.png.identifier) {
-                data,
-                error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else if let data {
-                    continuation.resume(returning: data)
-                } else {
-                    continuation.resume(throwing: ClipboardStorageError.missingImageData)
-                }
-            }
-        }
-
-        XCTAssertEqual(loadedData, pngData)
-        let promisedFileData: Data = try await withCheckedThrowingContinuation { continuation in
-            provider.loadFileRepresentation(forTypeIdentifier: UTType.png.identifier) {
-                url,
-                error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else if let url {
-                    do {
-                        continuation.resume(returning: try Data(contentsOf: url))
-                    } catch {
-                        continuation.resume(throwing: error)
-                    }
-                } else {
-                    continuation.resume(throwing: ClipboardStorageError.missingImageData)
-                }
-            }
-        }
-        XCTAssertEqual(promisedFileData, pngData)
-        let promisedFileURL: URL = try await withCheckedThrowingContinuation { continuation in
-            provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) {
-                data,
-                error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else if let data,
-                    let url = URL(dataRepresentation: data, relativeTo: nil)
-                {
-                    continuation.resume(returning: url)
-                } else {
-                    continuation.resume(throwing: ClipboardStorageError.missingImageData)
-                }
-            }
-        }
+        XCTAssertTrue(provider.hasItemConformingToTypeIdentifier(UTType.png.identifier))
+        XCTAssertEqual(storage.imageData(for: item), pngData)
+        XCTAssertEqual(store.items, itemsBeforeDrag)
+        let stager = ClipboardDragFileStager(
+            imageReader: storage,
+            item: item,
+            stagingRoot: try makeTemporaryDirectory(),
+            fileManager: .default
+        )
+        let promisedFileURL = try stager.fileURL()
         XCTAssertTrue(promisedFileURL.isFileURL)
         XCTAssertEqual(promisedFileURL.pathExtension.lowercased(), "png")
         XCTAssertEqual(try Data(contentsOf: promisedFileURL), pngData)

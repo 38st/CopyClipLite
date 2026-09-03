@@ -22,6 +22,28 @@ private final class CountingClipboardImageReader: ClipboardImageReading, @unchec
     }
 }
 
+private final class RecordingTransferRepository: ClipboardTransferRepository, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedExportURL: URL?
+
+    var exportURL: URL? {
+        lock.withLock { storedExportURL }
+    }
+
+    func export(_ items: [ClipboardItem], to url: URL) throws {
+        lock.withLock { storedExportURL = url }
+        try Data("private history".utf8).write(to: url, options: .atomic)
+    }
+
+    func importItems(from url: URL) throws -> [ClipboardItem] {
+        []
+    }
+
+    func importItems(data: Data) throws -> [ClipboardItem] {
+        []
+    }
+}
+
 private func posixPermissions(at url: URL) throws -> Int {
     let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
     return attributes[.posixPermissions] as? Int ?? -1
@@ -29,6 +51,32 @@ private func posixPermissions(at url: URL) throws -> Int {
 
 @MainActor
 final class ClipboardTransferRegressionTests: XCTestCase {
+    func testExportStagesOutsideDestinationAndAtomicallyMovesFinishedFile() async throws {
+        let destinationDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "CopyClipLite-ExportRegression-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: destinationDirectory) }
+        try FileManager.default.createDirectory(
+            at: destinationDirectory,
+            withIntermediateDirectories: true
+        )
+        let destinationURL = destinationDirectory.appendingPathComponent("History.json")
+        let repository = RecordingTransferRepository()
+        let service = ClipboardTransferService(storage: repository)
+
+        try await service.export([ClipboardItem(text: "secret")], to: destinationURL)
+
+        let stagedURL = try XCTUnwrap(repository.exportURL)
+        XCTAssertNotEqual(stagedURL.deletingLastPathComponent(), destinationDirectory)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stagedURL.path))
+        XCTAssertEqual(try Data(contentsOf: destinationURL), Data("private history".utf8))
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: destinationDirectory.path),
+            ["History.json"]
+        )
+    }
+
     func testImageDragStagingIsLazyPrivateAndRemovedWithProvider() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "CopyClipLite-DragRegression-\(UUID().uuidString)",

@@ -30,6 +30,95 @@ final class ClipboardPanelOrderingTests: XCTestCase {
         )
     }
 
+    func testQuickSelectionUsesPinnedFirstDisplayedOrder() {
+        let recent = ClipboardItem(text: "recent")
+        let pinned = ClipboardItem(text: "pinned", isPinned: true)
+        let displayed = ClipboardPanelModel.displayedItems([recent, pinned])
+
+        XCTAssertEqual(
+            ClipboardPanelModel.item(
+                forQuickSelectionNumber: 1,
+                displayedItems: displayed
+            )?.id,
+            pinned.id
+        )
+        XCTAssertEqual(
+            ClipboardPanelModel.item(
+                forQuickSelectionNumber: 2,
+                displayedItems: displayed
+            )?.id,
+            recent.id
+        )
+        XCTAssertNil(
+            ClipboardPanelModel.item(
+                forQuickSelectionNumber: 3,
+                displayedItems: displayed
+            )
+        )
+    }
+
+    func testCommandClickTogglesIndividualRows() {
+        let first = ClipboardItem(text: "first")
+        let second = ClipboardItem(text: "second")
+        var selection = ClipboardPanelSelection.single(first.id)
+
+        selection = ClipboardPanelModel.selection(
+            afterSelecting: second.id,
+            modifier: .toggle,
+            current: selection,
+            displayedItems: [first, second]
+        )
+        XCTAssertEqual(selection.selectedIDs, [first.id, second.id])
+        XCTAssertEqual(selection.primaryID, second.id)
+
+        selection = ClipboardPanelModel.selection(
+            afterSelecting: first.id,
+            modifier: .toggle,
+            current: selection,
+            displayedItems: [first, second]
+        )
+        XCTAssertEqual(selection.selectedIDs, [second.id])
+        XCTAssertEqual(selection.primaryID, second.id)
+    }
+
+    func testShiftClickSelectsPinnedFirstContiguousRange() {
+        let firstPinned = ClipboardItem(text: "first pinned", isPinned: true)
+        let secondPinned = ClipboardItem(text: "second pinned", isPinned: true)
+        let firstRecent = ClipboardItem(text: "first recent")
+        let secondRecent = ClipboardItem(text: "second recent")
+        let displayed = [firstPinned, secondPinned, firstRecent, secondRecent]
+        let selection = ClipboardPanelModel.selection(
+            afterSelecting: firstRecent.id,
+            modifier: .range,
+            current: .single(firstPinned.id),
+            displayedItems: displayed
+        )
+
+        XCTAssertEqual(
+            selection.selectedIDs,
+            [firstPinned.id, secondPinned.id, firstRecent.id]
+        )
+        XCTAssertEqual(selection.primaryID, firstRecent.id)
+        XCTAssertEqual(selection.anchorID, firstPinned.id)
+    }
+
+    func testReconcileDropsHiddenRowsAndKeepsVisibleSelection() {
+        let first = ClipboardItem(text: "first")
+        let second = ClipboardItem(text: "second")
+        let selection = ClipboardPanelSelection(
+            selectedIDs: [first.id, second.id],
+            primaryID: second.id,
+            anchorID: first.id
+        )
+
+        let reconciled = ClipboardPanelModel.reconciledSelection(
+            selection,
+            displayedItems: [second]
+        )
+
+        XCTAssertEqual(reconciled, .single(second.id))
+    }
+
     func testDeletingUnselectedRowPreservesSelection() {
         let first = ClipboardItem(text: "first")
         let second = ClipboardItem(text: "second")

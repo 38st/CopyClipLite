@@ -128,6 +128,33 @@ extension ClipboardStoreTests {
         XCTAssertEqual(store.lastCopiedID, transformedItem.id)
     }
 
+    func testCopyWithTransformationRejectsTextThatExpandsPastExportLimit() throws {
+        let pasteboard = makePasteboard()
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        let sourceText = String(
+            repeating: "ß",
+            count: ClipboardStorage.maximumImportedTextCharacters
+        )
+        storage.save([ClipboardItem(text: sourceText)])
+        let writer = StubPasteboardWriter(result: .success)
+        let store = ClipboardStore(
+            pasteboard: pasteboard,
+            storage: storage,
+            defaults: makeDefaults(),
+            pasteboardWriter: writer
+        )
+        let originalItems = store.items
+
+        store.copyWithTransformation(
+            try XCTUnwrap(store.items.first),
+            transformation: .uppercase
+        )
+
+        XCTAssertTrue(writer.requests.isEmpty)
+        XCTAssertEqual(store.items, originalItems)
+        XCTAssertTrue(store.captureWarning?.contains("20,000") == true)
+    }
+
     func testCopyWithTransformationDeduplicatesExistingItem() throws {
         let pasteboard = makePasteboard()
         let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
@@ -150,7 +177,7 @@ extension ClipboardStoreTests {
         XCTAssertEqual(transformedItem.copyCount, 2)
     }
 
-    func testStripFormattingCopiesWhitespaceOnlyLegacyTextExactly() throws {
+    func testCopyWithoutFormattingCopiesWhitespaceOnlyLegacyTextExactly() throws {
         let pasteboard = makePasteboard()
         let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
         storage.save([ClipboardItem(text: "   ")])
@@ -161,7 +188,7 @@ extension ClipboardStoreTests {
         )
         let item = try XCTUnwrap(store.items.first)
 
-        store.copyWithTransformation(item, transformation: .stripFormatting)
+        XCTAssertTrue(store.copyWithoutFormatting(item))
 
         XCTAssertEqual(store.items.count, 1)
         XCTAssertEqual(pasteboard.string(forType: .string), "   ")
@@ -169,7 +196,7 @@ extension ClipboardStoreTests {
         XCTAssertNil(pasteboard.data(forType: .html))
     }
 
-    func testStripFormattingPreservesExactWhitespaceAndUnicode() throws {
+    func testCopyWithoutFormattingPreservesExactWhitespaceAndUnicode() throws {
         let pasteboard = makePasteboard()
         let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
         let exactText = "  let café = \"☕️\"\n\n\tprint(café)  "
@@ -180,14 +207,43 @@ extension ClipboardStoreTests {
             defaults: makeDefaults()
         )
 
-        store.copyWithTransformation(
-            try XCTUnwrap(store.items.first),
-            transformation: .stripFormatting
+        XCTAssertTrue(
+            store.copyWithoutFormatting(try XCTUnwrap(store.items.first))
         )
 
         XCTAssertEqual(pasteboard.string(forType: .string), exactText)
         XCTAssertNil(pasteboard.data(forType: .rtf))
         XCTAssertNil(pasteboard.data(forType: .html))
+    }
+
+    func testCopyWithoutFormattingSendsNoRichTextRepresentationsToWriter() throws {
+        let storage = ClipboardStorage(appDirectory: try makeTemporaryDirectory())
+        storage.save([
+            ClipboardItem(
+                text: "plain result",
+                rtfData: Data("rich rtf".utf8),
+                htmlData: Data("rich html".utf8)
+            )
+        ])
+        let writer = StubPasteboardWriter(result: .success)
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: storage,
+            defaults: makeDefaults(),
+            pasteboardWriter: writer
+        )
+
+        XCTAssertTrue(
+            store.copyWithoutFormatting(try XCTUnwrap(store.items.first))
+        )
+
+        let request = try XCTUnwrap(writer.requests.first)
+        XCTAssertEqual(
+            request.required,
+            [ClipboardPasteboardRepresentation(.string, value: .string("plain result"))]
+        )
+        XCTAssertTrue(request.optional.isEmpty)
+        XCTAssertEqual(store.items.first?.copyCount, 2)
     }
 
     func testPollingExtractsPlainTextFromRTFWithoutStringFlavor() throws {

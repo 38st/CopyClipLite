@@ -11,7 +11,7 @@ final class ClipboardCaptureReaderTests: XCTestCase {
             repeating: 0x41,
             count: ClipboardStorage.maximumImportedRichTextBytes + 1
         )
-        XCTAssertTrue(pasteboard.setData(oversizedRTF, forType: .rtf))
+        pasteboard.setData(oversizedRTF, forType: .rtf)
 
         let result = ClipboardCaptureReader.text(from: pasteboard)
 
@@ -24,8 +24,8 @@ final class ClipboardCaptureReaderTests: XCTestCase {
 
     func testInvalidPNGRepresentationFallsBackToValidTIFF() throws {
         let pasteboard = makePasteboard()
-        XCTAssertTrue(pasteboard.setData(Data("not a png".utf8), forType: .png))
-        XCTAssertTrue(pasteboard.setData(try makeTIFFData(width: 4, height: 3), forType: .tiff))
+        pasteboard.setData(Data("not a png".utf8), forType: .png)
+        pasteboard.setData(try makeTIFFData(width: 4, height: 3), forType: .tiff)
 
         let candidate = try XCTUnwrap(ClipboardCaptureReader.image(from: pasteboard))
         let payload = try ClipboardImageProcessor.process(candidate)
@@ -34,12 +34,12 @@ final class ClipboardCaptureReaderTests: XCTestCase {
         XCTAssertEqual(payload.height, 3)
     }
 
-    func testFinderFileURLIsSnapshottedWithoutReadingTheFile() throws {
+    func testFinderImageFileURLIsSnapshottedWithoutReadingTheFile() throws {
         let pasteboard = makePasteboard()
         let missingURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("CopyClipLite-Missing-\(UUID().uuidString).png")
         XCTAssertFalse(FileManager.default.fileExists(atPath: missingURL.path))
-        XCTAssertTrue(pasteboard.setString(missingURL.absoluteString, forType: .fileURL))
+        pasteboard.setString(missingURL.absoluteString, forType: .fileURL)
 
         let candidate = try XCTUnwrap(ClipboardCaptureReader.image(from: pasteboard))
 
@@ -49,12 +49,18 @@ final class ClipboardCaptureReaderTests: XCTestCase {
         XCTAssertEqual(snapshotURL, missingURL)
     }
 
-    private func makePasteboard() -> NSPasteboard {
-        let pasteboard = NSPasteboard(
-            name: NSPasteboard.Name("CopyClipLite.ReaderTests.\(UUID().uuidString)")
-        )
-        pasteboard.clearContents()
-        return pasteboard
+    func testFinderNonImageFileURLIsNotTreatedAsAnImageCandidate() {
+        let pasteboard = makePasteboard()
+        let missingURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CopyClipLite-Missing-\(UUID().uuidString).txt")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: missingURL.path))
+        pasteboard.setString(missingURL.absoluteString, forType: .fileURL)
+
+        XCTAssertNil(ClipboardCaptureReader.image(from: pasteboard))
+    }
+
+    private func makePasteboard() -> StubCapturePasteboard {
+        StubCapturePasteboard()
     }
 
     private func makeTIFFData(width: Int, height: Int) throws -> Data {
@@ -85,5 +91,25 @@ final class ClipboardCaptureReaderTests: XCTestCase {
         CGImageDestinationAddImage(destination, image, nil)
         XCTAssertTrue(CGImageDestinationFinalize(destination))
         return data as Data
+    }
+}
+
+private final class StubCapturePasteboard: ClipboardCapturePasteboard {
+    private var values: [NSPasteboard.PasteboardType: Data] = [:]
+
+    func data(forType dataType: NSPasteboard.PasteboardType) -> Data? {
+        values[dataType]
+    }
+
+    func string(forType dataType: NSPasteboard.PasteboardType) -> String? {
+        values[dataType].flatMap { String(data: $0, encoding: .utf8) }
+    }
+
+    func setData(_ data: Data, forType dataType: NSPasteboard.PasteboardType) {
+        values[dataType] = data
+    }
+
+    func setString(_ string: String, forType dataType: NSPasteboard.PasteboardType) {
+        values[dataType] = Data(string.utf8)
     }
 }

@@ -202,6 +202,8 @@ struct ClipboardPanelView: View {
             return .noTextClips
         case .images:
             return .noImageClips
+        case .links:
+            return .noLinkClips
         case .pinned:
             return .noPinnedClips
         }

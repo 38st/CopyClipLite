@@ -68,6 +68,8 @@ selection at once. Drag any row straight into another app — text lands as text
 **Search scoping** — type `app:safari invoice` to search only clips that came from Safari. A plain
 query still searches everything.
 
+**Filters** narrow the list to text, images, files and links, or just your pinned clips.
+
 ---
 
 ## What it captures
@@ -76,6 +78,8 @@ query still searches everything.
 |---|---|
 | **Text** | Plain text, plus RTF and HTML when the source provides them |
 | **Images** | PNG, TIFF, JPEG, HEIC/HEIF, and images copied in Finder — normalized to PNG |
+| **Files** | Copy a file in Finder and it stays a file: paste it back into Finder, or drag it straight out |
+| **Links** | URLs are kept as links, showing the host rather than a wall of query string |
 | **Context** | Which app a clip came from, when it was last used, how often |
 
 **Pins** keep a clip out of the auto-clear rotation until you remove it yourself. Pinned clips sit at

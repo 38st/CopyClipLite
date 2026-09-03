@@ -22,6 +22,8 @@ struct ClipboardItemRow: View {
                 HStack(alignment: .top, spacing: 10) {
                     if item.isImage {
                         ClipboardImageThumbnail(data: thumbnailData)
+                    } else if let link = item.link {
+                        ClipboardLinkGlyph(isFile: link.isFileURL)
                     }
 
                     VStack(alignment: .leading, spacing: 7) {
@@ -171,6 +173,27 @@ struct ClipboardItemRow: View {
         [isSelected ? "Selected" : nil, isCopied ? "Copied" : nil, item.metadataText]
             .compactMap { $0 }
             .joined(separator: ", ")
+    }
+}
+
+private struct ClipboardLinkGlyph: View {
+    let isFile: Bool
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color(nsColor: .separatorColor).opacity(0.2))
+            Image(systemName: isFile ? "doc" : "link")
+                .font(.system(size: 18))
+                .foregroundStyle(.secondary)
+        }
+        .frame(width: 52, height: 52)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(Color(nsColor: .separatorColor).opacity(0.55))
+        )
+        .accessibilityHidden(true)
     }
 }
 

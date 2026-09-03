@@ -123,7 +123,21 @@ struct ClipboardDragProviderFactory {
             return textProvider(for: item)
         case .image:
             return imageProvider(for: item)
+        case .link:
+            return linkProvider(for: item)
         }
+    }
+
+    @MainActor
+    private func linkProvider(for item: ClipboardItem) -> NSItemProvider {
+        guard let link = item.link else {
+            return NSItemProvider(object: item.text as NSString)
+        }
+        // A file clip already points at a real file, so hand the receiver the URL
+        // itself rather than staging a copy the way image clips have to.
+        let provider = NSItemProvider(object: link.url as NSURL)
+        provider.suggestedName = link.subtitle ?? link.url.lastPathComponent
+        return provider
     }
 
     @MainActor

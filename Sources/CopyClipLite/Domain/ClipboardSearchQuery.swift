@@ -67,6 +67,15 @@ struct ClipboardSearchQuery: Equatable, Sendable {
             return ["image", item.image?.dimensionsText, item.text]
                 .compactMap { $0 }
                 .joined(separator: " ")
+        case .link:
+            return [
+                item.isFileClip ? "file" : "link",
+                item.link?.title,
+                item.link?.subtitle,
+                item.text,
+            ]
+            .compactMap { $0 }
+            .joined(separator: " ")
         }
     }
 }

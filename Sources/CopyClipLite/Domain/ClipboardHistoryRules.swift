@@ -144,6 +144,36 @@ enum ClipboardHistoryRules {
         return items.sorted { $0.lastCopiedAt > $1.lastCopiedAt }
     }
 
+    static func recordingLink(
+        _ link: ClipboardLinkContent,
+        sourceApplication: ClipboardSourceApplication?,
+        capturedAt: Date,
+        in currentItems: [ClipboardItem]
+    ) -> [ClipboardItem] {
+        var items = currentItems
+        if let existingIndex = items.firstIndex(where: { $0.linkURL == link.url }) {
+            var existing = items.remove(at: existingIndex)
+            let isNewestRepresentation = capturedAt >= existing.lastCopiedAt
+            existing.lastCopiedAt = max(existing.lastCopiedAt, capturedAt)
+            existing.copyCount = incrementedCopyCount(existing.copyCount)
+            if isNewestRepresentation {
+                existing.sourceApplication = sourceApplication ?? existing.sourceApplication
+            }
+            items.insert(existing, at: 0)
+        } else {
+            items.insert(
+                ClipboardItem(
+                    link: link,
+                    createdAt: capturedAt,
+                    lastCopiedAt: capturedAt,
+                    sourceApplication: sourceApplication
+                ),
+                at: 0
+            )
+        }
+        return items
+    }
+
     private static func matchesForImport(
         _ existingItem: ClipboardItem,
         _ importedItem: ClipboardItem
@@ -156,6 +186,8 @@ enum ClipboardHistoryRules {
         case .image:
             guard let importedHash = importedItem.image?.contentHash else { return false }
             return existingItem.image?.contentHash == importedHash
+        case .link:
+            return existingItem.linkURL == importedItem.linkURL
         }
     }
 

@@ -4,6 +4,7 @@ enum ClipboardContentFilter: String, CaseIterable, Identifiable {
     case all
     case text
     case images
+    case links
     case pinned
 
     var id: String {
@@ -18,6 +19,8 @@ enum ClipboardContentFilter: String, CaseIterable, Identifiable {
             "Text"
         case .images:
             "Images"
+        case .links:
+            "Links"
         case .pinned:
             "Pinned"
         }
@@ -31,6 +34,8 @@ enum ClipboardContentFilter: String, CaseIterable, Identifiable {
             item.contentKind == .text
         case .images:
             item.isImage
+        case .links:
+            item.contentKind == .link
         case .pinned:
             item.isPinned
         }

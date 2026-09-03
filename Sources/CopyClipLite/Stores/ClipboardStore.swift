@@ -733,6 +733,16 @@ final class ClipboardStore: ObservableObject {
             return
         }
 
+        if let link = ClipboardCaptureReader.link(from: pasteboard) {
+            record(
+                link,
+                sourceApplication: sourceApplication,
+                capturedAt: clock.now()
+            )
+            captureWarning = capturedText.warning
+            return
+        }
+
         guard let textSnapshot = capturedText.snapshot else {
             return
         }
@@ -800,6 +810,22 @@ final class ClipboardStore: ObservableObject {
 
     private func invalidatePendingImageCaptures() {
         imageCaptureQueue.invalidate()
+    }
+
+    private func record(
+        _ link: ClipboardLinkContent,
+        sourceApplication: ClipboardSourceApplication? = nil,
+        capturedAt: Date? = nil
+    ) {
+        let capturedAt = capturedAt ?? clock.now()
+        items = ClipboardHistoryRules.recordingLink(
+            link,
+            sourceApplication: sourceApplication,
+            capturedAt: capturedAt,
+            in: items
+        )
+        pruneHistory()
+        persist()
     }
 
     @discardableResult
@@ -944,6 +970,27 @@ final class ClipboardStore: ObservableObject {
                     ClipboardPasteboardRepresentation(.png, value: .data(imageData))
                 ],
                 optional: optional
+            )
+        case .link:
+            guard let link = item.link else {
+                return .failure
+            }
+            // The plain string is required so any destination can take the clip;
+            // the typed URL is optional so a Finder-style paste gets a real file.
+            let urlType: NSPasteboard.PasteboardType = link.isFileURL ? .fileURL : .URL
+            request = ClipboardPasteboardWriteRequest(
+                required: [
+                    ClipboardPasteboardRepresentation(
+                        .string,
+                        value: .string(link.displayText)
+                    )
+                ],
+                optional: [
+                    ClipboardPasteboardRepresentation(
+                        urlType,
+                        value: .string(link.url.absoluteString)
+                    )
+                ]
             )
         }
         return pasteboardWriter.write(request)

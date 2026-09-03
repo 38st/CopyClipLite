@@ -84,6 +84,29 @@ enum ClipboardCaptureReader {
         return sources.isEmpty ? nil : ClipboardImageCandidate(sources: sources)
     }
 
+    /// A file copied in Finder, or a link copied from a browser. Image files are
+    /// deliberately excluded: they belong to the image pipeline, which normalizes
+    /// them to PNG so the clip survives the original file being moved or deleted.
+    static func link(from pasteboard: ClipboardCapturePasteboard) -> ClipboardLinkContent? {
+        if let fileURLString = pasteboard.string(forType: .fileURL),
+           let fileURL = URL(string: fileURLString),
+           fileURL.isFileURL,
+           !isImageFile(fileURL) {
+            let name = fileURL.lastPathComponent
+            return ClipboardLinkContent(
+                url: fileURL,
+                title: name.isEmpty ? nil : name
+            )
+        }
+        guard let urlString = pasteboard.string(forType: .URL),
+              let url = URL(string: urlString),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            return nil
+        }
+        return ClipboardLinkContent(url: url, title: nil)
+    }
+
     private static func isImageFile(_ url: URL) -> Bool {
         let resourceType = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType
         if resourceType?.conforms(to: .image) == true

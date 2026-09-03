@@ -151,7 +151,30 @@ enum ClipboardTransferCodec {
                       image.thumbnailData?.count ?? 0 <= ClipboardStorage.maximumImportedImageBytes else {
                     throw ClipboardStorageError.invalidImportedItem("image data is too large")
                 }
+            case .link:
+                guard item.image == nil else {
+                    throw ClipboardStorageError.invalidImportedItem("a link clip contains image data")
+                }
+                guard let link = item.link else {
+                    throw ClipboardStorageError.invalidImportedItem("a link clip is missing its URL")
+                }
+                try validateLinkURL(link.url)
             }
+        }
+    }
+
+    /// Imported URLs come from a file the user was handed, so restrict them to the
+    /// schemes the app itself produces. Anything else could be written straight back
+    /// onto the pasteboard by a later copy.
+    static func validateLinkURL(_ url: URL) throws {
+        guard let scheme = url.scheme?.lowercased(),
+              ["http", "https", "file"].contains(scheme) else {
+            throw ClipboardStorageError.invalidImportedItem(
+                "a link clip uses an unsupported URL scheme"
+            )
+        }
+        guard url.absoluteString.count <= ClipboardStorage.maximumImportedTextCharacters else {
+            throw ClipboardStorageError.invalidImportedItem("a link clip URL is too long")
         }
     }
 
@@ -231,6 +254,23 @@ enum ClipboardTransferCodec {
         }
 
         switch kind {
+        case .link:
+            guard transfer.image == nil else {
+                throw ClipboardStorageError.invalidImportedItem("a link clip contains image data")
+            }
+            guard let linkURL = transfer.linkURL else {
+                throw ClipboardStorageError.invalidImportedItem("a link clip is missing its URL")
+            }
+            try validateLinkURL(linkURL)
+            return ClipboardItem(
+                id: id,
+                link: ClipboardLinkContent(url: linkURL, title: transfer.linkTitle),
+                createdAt: createdAt,
+                lastCopiedAt: lastCopiedAt,
+                isPinned: transfer.isPinned ?? false,
+                copyCount: copyCount,
+                sourceApplication: transfer.sourceApplication
+            )
         case .text:
             guard transfer.image == nil else {
                 throw ClipboardStorageError.invalidImportedItem("a text clip contains image data")

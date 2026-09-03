@@ -42,6 +42,7 @@ enum EmptyHistoryReason {
     case noMatches
     case noTextClips
     case noImageClips
+    case noLinkClips
     case noPinnedClips
 
     var systemImage: String {
@@ -50,6 +51,7 @@ enum EmptyHistoryReason {
         case .noMatches: "magnifyingglass"
         case .noTextClips: "text.alignleft"
         case .noImageClips: "photo"
+        case .noLinkClips: "link"
         case .noPinnedClips: "pin"
         }
     }
@@ -60,6 +62,7 @@ enum EmptyHistoryReason {
         case .noMatches: "No matches"
         case .noTextClips: "No text clips"
         case .noImageClips: "No image clips"
+        case .noLinkClips: "No files or links"
         case .noPinnedClips: "No pinned clips"
         }
     }
@@ -70,6 +73,7 @@ enum EmptyHistoryReason {
         case .noMatches: "Try a different search or filter."
         case .noTextClips: "Text clips will appear here."
         case .noImageClips: "Image clips will appear here."
+        case .noLinkClips: "Files and links you copy will appear here."
         case .noPinnedClips: "Pinned clips will stay at the top."
         }
     }

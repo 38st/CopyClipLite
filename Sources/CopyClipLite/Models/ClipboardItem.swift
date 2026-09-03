@@ -3,6 +3,7 @@ import Foundation
 enum ClipboardContentKind: String, Codable, Hashable, Sendable {
     case text
     case image
+    case link
 }
 
 struct ClipboardImagePayload: Codable, Hashable, Sendable {
@@ -113,6 +114,9 @@ struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
             case var .image(value):
                 value.associatedText = newValue
                 content = .image(value)
+            case .link:
+                // A link clip's text is derived from its URL and is not editable.
+                break
             }
         }
     }
@@ -140,10 +144,23 @@ struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
                         htmlData: nil
                     )
                 )
-            case (.text, nil):
+            case (.text, nil), (.link, nil):
                 break
             }
         }
+    }
+
+    var link: ClipboardLinkContent? {
+        guard case let .link(value) = content else { return nil }
+        return value
+    }
+
+    var linkURL: URL? {
+        link?.url
+    }
+
+    var isFileClip: Bool {
+        link?.isFileURL == true
     }
 
     var rtfData: Data? {
@@ -213,6 +230,24 @@ struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         self.sourceApplication = sourceApplication
     }
 
+    init(
+        id: UUID = UUID(),
+        link: ClipboardLinkContent,
+        createdAt: Date = Date(),
+        lastCopiedAt: Date = Date(),
+        isPinned: Bool = false,
+        copyCount: Int = 1,
+        sourceApplication: ClipboardSourceApplication? = nil
+    ) {
+        self.id = id
+        self.content = .link(link)
+        self.createdAt = createdAt
+        self.lastCopiedAt = lastCopiedAt
+        self.isPinned = isPinned
+        self.copyCount = Self.normalizedCopyCount(copyCount)
+        self.sourceApplication = sourceApplication
+    }
+
     init(from decoder: Decoder) throws {
         let persisted = try PersistedClipboardItem(from: decoder)
         id = persisted.id ?? UUID()
@@ -220,7 +255,14 @@ struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         let image = persisted.image
         let decodedContentKind = persisted.contentKind
             .flatMap(ClipboardContentKind.init(rawValue:))
-        switch Self.normalizedContentKind(decodedContentKind, image: image) {
+        let persistedLink = persisted.linkURL.map {
+            ClipboardLinkContent(url: $0, title: persisted.linkTitle)
+        }
+        switch Self.normalizedContentKind(
+            decodedContentKind,
+            image: image,
+            link: persistedLink
+        ) {
         case .text:
             content = .text(
                 ClipboardTextContent(
@@ -243,6 +285,18 @@ struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
             content = .image(
                 ClipboardImageContent(associatedText: text, payload: image)
             )
+        case .link:
+            guard let persistedLink else {
+                content = .text(
+                    ClipboardTextContent(
+                        text: text,
+                        rtfData: persisted.rtfData,
+                        htmlData: persisted.htmlData
+                    )
+                )
+                break
+            }
+            content = .link(persistedLink)
         }
         createdAt = persisted.createdAt ?? Date()
         lastCopiedAt = persisted.lastCopiedAt ?? Date()
@@ -256,6 +310,8 @@ struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
             id: id,
             text: text,
             contentKind: contentKind.rawValue,
+            linkURL: link?.url,
+            linkTitle: link?.title,
             image: image,
             rtfData: rtfData,
             htmlData: htmlData,
@@ -268,7 +324,7 @@ struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     }
 
     var previewText: String {
-        Self.previewText(contentKind: contentKind, text: text, image: image)
+        Self.previewText(contentKind: contentKind, text: text, image: image, link: link)
     }
 
     var isImage: Bool {
@@ -289,6 +345,16 @@ struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
             ["image", image?.dimensionsText, text, sourceApplication?.name]
                 .compactMap { $0 }
                 .joined(separator: " ")
+        case .link:
+            [
+                isFileClip ? "file" : "link",
+                link?.title,
+                link?.subtitle,
+                text,
+                sourceApplication?.name,
+            ]
+            .compactMap { $0 }
+            .joined(separator: " ")
         }
     }
 
@@ -300,6 +366,10 @@ struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         case .text:
             let countText = text.count == 1 ? "1 character" : "\(text.count) characters"
             return [countText, copies, sourceName]
+                .compactMap { $0 }
+                .joined(separator: " · ")
+        case .link:
+            return [isFileClip ? "File" : "Link", link?.subtitle, copies, sourceName]
                 .compactMap { $0 }
                 .joined(separator: " · ")
         case .image:
@@ -321,8 +391,12 @@ struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
 
     private static func normalizedContentKind(
         _ contentKind: ClipboardContentKind?,
-        image: ClipboardImagePayload?
+        image: ClipboardImagePayload?,
+        link: ClipboardLinkContent?
     ) -> ClipboardContentKind {
+        if contentKind == .link || (contentKind == nil && link != nil) {
+            return link == nil ? .text : .link
+        }
         if contentKind == .image || image != nil {
             return image == nil ? .text : .image
         }
@@ -337,7 +411,8 @@ struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
     private static func previewText(
         contentKind: ClipboardContentKind,
         text: String,
-        image: ClipboardImagePayload?
+        image: ClipboardImagePayload?,
+        link: ClipboardLinkContent?
     ) -> String {
         switch contentKind {
         case .text:
@@ -345,6 +420,8 @@ struct ClipboardItem: Identifiable, Codable, Hashable, Sendable {
         case .image:
             let textPreview = text.copyClipPreview(limit: 96)
             return textPreview.isEmpty ? "Image" : "Image · \(textPreview)"
+        case .link:
+            return (link?.title ?? text).copyClipPreview(limit: 160)
         }
     }
 }
@@ -353,6 +430,8 @@ private struct PersistedClipboardItem: Codable {
     let id: UUID?
     let text: String?
     let contentKind: String?
+    let linkURL: URL?
+    let linkTitle: String?
     let image: ClipboardImagePayload?
     let rtfData: Data?
     let htmlData: Data?

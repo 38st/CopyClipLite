@@ -29,6 +29,8 @@ struct ClipboardTransferItem: Codable {
     let id: UUID?
     let text: String?
     let contentKind: String?
+    let linkURL: URL?
+    let linkTitle: String?
     let image: ClipboardTransferImage?
     let rtfData: Data?
     let htmlData: Data?
@@ -42,6 +44,8 @@ struct ClipboardTransferItem: Codable {
         id = item.id
         text = item.text
         contentKind = item.contentKind.rawValue
+        linkURL = item.link?.url
+        linkTitle = item.link?.title
         if let image = item.image {
             self.image = ClipboardTransferImage(
                 data: image.data,

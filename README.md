@@ -1,129 +1,218 @@
+<div align="center">
+
+<img src="docs/images/icon.png" width="128" height="128" alt="CopyClip Lite icon">
+
 # CopyClip Lite
 
-[![CI](https://github.com/38st/CopyClipLite/actions/workflows/ci.yml/badge.svg)](https://github.com/38st/CopyClipLite/actions/workflows/ci.yml)
-[![Latest release](https://img.shields.io/github/v/release/38st/CopyClipLite)](https://github.com/38st/CopyClipLite/releases/latest)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+**Clipboard history for macOS. Local, native, out of the way.**
 
-CopyClip Lite is a lightweight native macOS clipboard history utility. It runs from the menu bar without a Dock icon, watches text and images copied to the system pasteboard, and keeps a small searchable history in Application Support.
+A menu-bar app that remembers what you copy and gives it back with a keystroke.
+No account, no sync, no analytics — your clipboard never leaves your Mac.
 
-## Features
+[![CI](https://img.shields.io/github/actions/workflow/status/38st/CopyClipLite/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/38st/CopyClipLite/actions/workflows/ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/38st/CopyClipLite?style=flat-square&label=release)](https://github.com/38st/CopyClipLite/releases/latest)
+[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black?style=flat-square&logo=apple)](#requirements)
+[![Universal](https://img.shields.io/badge/universal-arm64%20%2B%20x86__64-black?style=flat-square)](#requirements)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 
-- Menu bar panel with searchable clipboard history, including `app:name` source filters
-- Plain text plus RTF/HTML text capture; PNG, TIFF, JPEG, HEIC/HEIF, and Finder-copied local image capture through one normalized PNG pipeline
-- One-click copy back to the pasteboard
-- Native drag-out for plain/rich text and PNG images, plus validated JSON drop-import in Settings
-- Keyboard navigation with arrow keys, Return, and Command-1 through Command-9 quick selection
-- Global Option-Command-V hotkey to open clipboard search
-- Paste-as-plain-text plus single and multi-select pin, unpin, delete, clear, timed pause, and quit controls
-- Quick filters for all clips, text, images, and pinned items
-- JSON persistence with a configurable unpinned history limit
-- Auto-clear options for unpinned clips: 24 hours, 7 days, 30 days, or never
-- Pinned clips are preserved until manually deleted or cleared
-- Optional clear of unpinned history when quitting
-- App ignore list seeded once with common credential managers and Apple's Passwords app
-- Versioned, same-version-compatible JSON history export and import
-- Strategy-aware validated import preview with merge/replace projections and automatic pre-import backups
-- Launch at Login setting for menu-bar startup
-- Native macOS app bundle with Finder, Spotlight, Launchpad, and menu-bar access
-- First-run welcome window
-- VoiceOver-aware keyboard selection, named row actions, and Reduce Motion-aware scrolling
+<br>
+
+<img src="docs/images/panel.png" width="420" alt="The CopyClip Lite panel showing a pinned clip above recent clipboard history, with a search field and All/Text/Images/Pinned filters">
+
+</div>
+
+---
+
+## Install
+
+**Download it**
+
+Grab `CopyClip-Lite-macOS.zip` from the [latest release](https://github.com/38st/CopyClipLite/releases/latest),
+unzip, and drag **CopyClip Lite.app** into Applications.
+
+Releases are ad-hoc signed rather than notarized, so the first launch needs one extra step:
+Control-click the app, choose **Open**, then confirm.
+
+**Or build it**
+
+```bash
+git clone https://github.com/38st/CopyClipLite.git
+cd CopyClipLite
+./script/install_app.sh
+```
+
+Builds a universal bundle, installs it to `/Applications/CopyClip Lite.app`, refreshes the
+LaunchServices and Quick Look caches, and opens it.
+
+---
+
+## Using it
+
+Press <kbd>⌥</kbd><kbd>⌘</kbd><kbd>V</kbd> anywhere, or click the clipboard in your menu bar.
+Type to search, arrow to what you want, press <kbd>Return</kbd>.
+
+| Shortcut | Action |
+|---|---|
+| <kbd>⌥</kbd><kbd>⌘</kbd><kbd>V</kbd> | Open clipboard search — rebindable in Settings |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Move through the list |
+| <kbd>Return</kbd> | Use the selected clip |
+| <kbd>⌘</kbd><kbd>1</kbd>–<kbd>⌘</kbd><kbd>9</kbd> | Jump straight to one of the first nine clips |
+| <kbd>⇧</kbd><kbd>⌘</kbd><kbd>V</kbd> | Copy as plain text, dropping all formatting |
+| <kbd>⌘</kbd><kbd>F</kbd> | Focus search |
+| <kbd>⌘</kbd><kbd>P</kbd> | Pin or unpin |
+| <kbd>⌘</kbd><kbd>⌫</kbd> | Delete |
+
+<kbd>⇧</kbd>-click a range or <kbd>⌘</kbd>-click to toggle rows, then pin, unpin or delete the whole
+selection at once. Drag any row straight into another app — text lands as text, images as PNG files.
+
+**Search scoping** — type `app:safari invoice` to search only clips that came from Safari. A plain
+query still searches everything.
+
+---
+
+## What it captures
+
+| | |
+|---|---|
+| **Text** | Plain text, plus RTF and HTML when the source provides them |
+| **Images** | PNG, TIFF, JPEG, HEIC/HEIF, and images copied in Finder — normalized to PNG |
+| **Context** | Which app a clip came from, when it was last used, how often |
+
+**Pins** keep a clip out of the auto-clear rotation until you remove it yourself. Pinned clips sit at
+the top and never expire.
+
+**Transform & Copy** rewrites a text clip on the way out — uppercase, lowercase, or title case.
+
+**Pause** monitoring for five minutes, an hour, or until tomorrow.
+
+**Import and export** history as JSON, with a validated preview showing exactly what a merge or
+replace would do before you commit to it, and an automatic backup taken first.
+
+---
 
 ## Privacy
 
-Clipboard history stays local on the Mac. CopyClip Lite does not upload clipboard contents, use an account, or send analytics.
+This is the part that matters for a clipboard manager, so here it is in full.
 
-History files use owner-only permissions (`0600`) inside an owner-only directory (`0700`). They are not separately encrypted; enable FileVault if clipboard confidentiality matters. JSON exports are also unencrypted and may contain sensitive text and images.
+<img src="docs/images/settings-privacy.png" width="560" alt="The Privacy settings tab showing retention options and a source exclusion list pre-populated with 1Password, Bitwarden and Dashlane">
 
-CopyClip Lite skips pasteboard data marked concealed, transient, or auto-generated. Source-app exclusions are best effort because macOS does not expose guaranteed clipboard ownership; the app checks the active application both while polling and immediately before application switches are recorded.
+- **Nothing leaves your Mac.** No account, no telemetry, and no network access at all except the
+  explicit "Check for Updates" button. `URLSession` appears in exactly one file in the whole project.
+- **Concealed data is skipped.** Clips the source app marks transient, concealed, or auto-generated
+  — which is how password managers mark theirs — are never recorded.
+- **Password managers are excluded out of the box.** On first run the ignore list is seeded with
+  1Password, Bitwarden, KeePassXC, Keeper, Dashlane, LastPass, Proton Pass, and Apple's Passwords
+  app. Every entry is visible and editable, and one you remove stays removed.
+- **Per-app exclusions.** Add any app and its clips are dropped. Best effort: macOS does not expose
+  guaranteed clipboard ownership, so CopyClip checks the frontmost app both while polling and
+  immediately before an app switch is recorded.
+- **Owner-only files.** History is `0600` inside a `0700` directory. It is *not* separately
+  encrypted — turn on FileVault if clipboard confidentiality matters to you.
+- **Exports are plaintext.** A JSON export contains everything, images included, unencrypted. The app
+  warns you before writing one.
+- **Deleting means deleting.** Clearing history also purges the automatic pre-import backups, so
+  cleared content does not survive in a file you never see. Settings → Data shows how many backups
+  exist, how much space they use, and lets you delete them outright.
 
-On first run, the source-exclusion list includes 1Password, Bitwarden, KeePassXC, Keeper, Dashlane, LastPass, Proton Pass, and Apple's Passwords app. You can review or change every exclusion in Settings → Privacy, and removed defaults stay removed.
-
-History is stored at:
+Everything lives here:
 
 ```text
-~/Library/Application Support/CopyClipLite/clipboard-history.json
+~/Library/Application Support/CopyClipLite/
+├── clipboard-history.json                 # the history itself
+├── Images/                                # image clips, one PNG each
+└── clipboard-history.pre-import-*.json    # automatic pre-import backups, capped at 5
 ```
 
-Image files are stored locally under:
+Defaults: 50 unpinned clips, auto-cleared after 7 days. Both are configurable, and both warn you with
+an exact count before deleting anything.
 
-```text
-~/Library/Application Support/CopyClipLite/Images
-```
+<details>
+<summary><strong>Size limits</strong> — what gets downscaled, and what gets skipped</summary>
 
-By default, CopyClip Lite keeps up to 50 unpinned clips and auto-clears unpinned clips after 7 days. Pinned clips never auto-clear.
+<br>
 
-Text clips over 20,000 characters and encoded images over 10 MB are skipped with an in-app warning. Image inputs are capped at 30 MB and 16,384 pixels on either side; ordinary larger photos are proportionally downscaled into an approximately 16.8-megapixel output budget instead of being rejected.
+Unbounded clipboard data can freeze a UI or fill a disk, so CopyClip Lite bounds what it stores and
+tells you when something was refused.
 
-Rich text is retained only when a plain-text representation can be extracted, and each optional RTF/HTML representation is capped at 10 MB. Image copy-back requires PNG; macOS may synthesize additional representations for destination compatibility without CopyClip eagerly decoding a TIFF on the main thread.
+| | |
+|---|---|
+| Text | Skipped over 20,000 characters |
+| Image input | Skipped over 30 MB, or 16,384 px on either side |
+| Image output | Downscaled proportionally into roughly a 16.8-megapixel budget |
+| Stored image | Skipped if the encoded PNG still exceeds 10 MB |
+| RTF / HTML | 10 MB each, per clip |
+
+An ordinary large photo is downscaled rather than refused. Rich text is kept only when a plain-text
+version can also be extracted. Image copy-back writes PNG and lets macOS synthesize other
+representations on demand, rather than decoding a TIFF on the main thread.
+
+</details>
+
+---
 
 ## Requirements
 
 - macOS 14 Sonoma or later
-- Apple silicon or Intel Mac (release artifacts are universal)
-- Accessibility permission only when the optional Direct Paste feature is enabled
+- Apple silicon or Intel — releases are universal
+- Accessibility permission **only** if you enable Direct Paste, the optional mode that pastes
+  straight back into the app you came from
 
-## Install
-
-Download `CopyClip-Lite-macOS.zip` from the
-[latest GitHub release](https://github.com/38st/CopyClipLite/releases/latest),
-extract it, and move **CopyClip Lite.app** to Applications.
-
-Release builds are ad-hoc signed and not notarized. On first launch, macOS may
-require you to Control-click the app, choose **Open**, and confirm.
-
-To build and install directly from source instead:
-
-```bash
-./script/install_app.sh
-```
-
-The installer stages the app, installs it to `/Applications/CopyClip Lite.app`,
-refreshes LaunchServices and Quick Look icon caches, and opens the installed
-app.
+---
 
 ## Development
 
-Use the project-local run script:
-
 ```bash
-./script/build_and_run.sh
+swift test                 # the full suite
+./script/build_and_run.sh  # build, stage the .app, launch it
 ```
 
-The script builds the SwiftPM target, stages `dist/staging.noindex/CopyClip Lite.app`, and launches it as a menu-bar macOS app bundle.
-
-Run the test suite with:
+The complete local validation set, which is what CI runs on every pull request:
 
 ```bash
 swift test
+swift build -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
+./script/check_coverage.sh                      # needs jq
+./script/tests/installer_process_harness.sh
+bash ./script/tests/release_contract_harness.sh
 ```
 
-The complete coverage check also requires `jq` (`brew install jq`).
+`check_coverage.sh` enforces per-file and per-group line-coverage floors, not just one global number.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and
+[the accessibility matrix](docs/accessibility-testing.md) for the manual VoiceOver and Reduce Motion
+checks each release needs.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the complete validation workflow and
-[the accessibility test matrix](docs/accessibility-testing.md) for manual
-release checks.
+<details>
+<summary><strong>Releases and signing</strong></summary>
 
-## Releases
-
-Create a validated release ZIP from the staged bundle:
+<br>
 
 ```bash
 ./script/package_release.sh
 ```
 
-The script builds an ad-hoc signed release bundle, validates the bundle plist and signature integrity, writes `dist/CopyClip-Lite-macOS.zip`, reproduces the final ZIP byte-for-byte from the staged app, verifies the ZIP, launch-smoke-tests a fresh extraction, and reports the expected Gatekeeper assessment.
+Builds an ad-hoc signed universal bundle, validates the plist and signature, writes
+`dist/CopyClip-Lite-macOS.zip`, reproduces that ZIP byte-for-byte from the staged app, verifies it,
+launch-smoke-tests a fresh extraction, and reports the expected Gatekeeper assessment.
 
-The project does not require an Apple Developer Program account. Its selected release scope is ad-hoc signing rather than Developer ID signing/notarization. Optional Developer ID distribution remains supported by the packaging script for a future maintainer.
+This project has no Apple Developer Program account, so releases are ad-hoc signed rather than
+Developer ID signed and notarized. The packaging script still supports Developer ID distribution for
+a future maintainer who has one.
 
-Published app versions use one `X.Y.Z` grammar, and release tags use the matching `vX.Y.Z` form. Tagged releases run tests and the same ad-hoc package verification through `.github/workflows/release.yml` without Apple secrets. The workflow creates a draft with the Gatekeeper warning, downloads the uploaded ZIP, verifies its SHA-256 against the locally verified artifact, and only then publishes the release. CI validates tests, the release contract, the package, and both `arm64` and `x86_64` slices on every pull request.
+Versions use `X.Y.Z` and tags use `vX.Y.Z`. The tagged-release workflow runs the same verification,
+creates a draft, downloads the uploaded ZIP, checks its SHA-256 against the locally verified
+artifact, and only then publishes.
 
-Local and installed source builds use the public GitHub Releases endpoint for
-update checks. Maintainers can override it with `COPYCLIP_UPDATE_FEED_URL`.
+Source builds and releases both check for updates against the public GitHub Releases endpoint;
+maintainers can point that elsewhere with `COPYCLIP_UPDATE_FEED_URL`.
 
-The production bundle identifier is `io.github.38st.CopyClipLite`. On first launch after upgrading from the former local bundle identifier, CopyClip Lite migrates existing preferences; clipboard history remains in the same Application Support directory.
+The bundle identifier is `io.github.38st.CopyClipLite`. Upgrading from the old local identifier
+migrates preferences automatically; history stays where it is.
+
+</details>
+
+---
 
 ## License
 
-CopyClip Lite is available under the [MIT License](LICENSE).
-
-Please report security concerns according to [SECURITY.md](SECURITY.md).
+[MIT](LICENSE). Security reports go through [SECURITY.md](SECURITY.md) rather than the public issue
+tracker — please don't put real clipboard contents in an issue.

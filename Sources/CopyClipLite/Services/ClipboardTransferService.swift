@@ -54,18 +54,17 @@ struct ClipboardImportCommit: Sendable {
 
 actor ClipboardTransferService {
     private let storage: any ClipboardTransferRepository
-    private let fileManager: FileManager
 
-    init(
-        storage: any ClipboardTransferRepository,
-        fileManager: FileManager = .default
-    ) {
+    init(storage: any ClipboardTransferRepository) {
         self.storage = storage
-        self.fileManager = fileManager
     }
 
     func export(_ items: [ClipboardItem], to url: URL) throws {
         try Task.checkCancellation()
+        // Resolved inside the actor rather than stored: FileManager is not Sendable,
+        // so holding one as actor state means passing a non-Sendable value across an
+        // isolation boundary at every call site.
+        let fileManager = FileManager.default
         let stagingDirectory = try fileManager.url(
             for: .itemReplacementDirectory,
             in: .userDomainMask,

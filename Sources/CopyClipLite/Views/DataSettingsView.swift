@@ -29,7 +29,7 @@ struct DataSettingsView: View {
             )
         }
         .confirmationDialog(
-            importConfirmationTitle,
+            Self.importConfirmationTitle(for: transferState.pendingImportPlan?.artifact.preview),
             isPresented: $transferState.isConfirmingImport,
             titleVisibility: .visible
         ) {
@@ -156,13 +156,18 @@ struct DataSettingsView: View {
         }
     }
 
-    private var importConfirmationTitle: String {
-        guard let preview = transferState.pendingImportPlan?.artifact.preview else {
+    static func importConfirmationTitle(for preview: ClipboardImportPreview?) -> String {
+        guard let preview else {
             return "Import Clipboard History?"
         }
         let clipWord = preview.itemCount == 1 ? "clip" : "clips"
+        let imageWord = preview.imageCount == 1 ? "image" : "images"
+        let fileWord = preview.fileCount == 1 ? "file" : "files"
+        let webLinkWord = preview.webLinkCount == 1 ? "web link" : "web links"
         return
-            "Import \(preview.itemCount) \(clipWord) (\(preview.textCount) text, \(preview.imageCount) images)?"
+            "Import \(preview.itemCount) \(clipWord) (\(preview.textCount) text, "
+            + "\(preview.imageCount) \(imageWord), \(preview.fileCount) \(fileWord), "
+            + "\(preview.webLinkCount) \(webLinkWord))?"
     }
 
     private var pinnedItemCount: Int {

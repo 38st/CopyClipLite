@@ -9,11 +9,15 @@ struct ClipboardImportPreview: Sendable, Equatable {
     let itemCount: Int
     let textCount: Int
     let imageCount: Int
+    let fileCount: Int
+    let webLinkCount: Int
 
     init(items: [ClipboardItem]) {
         itemCount = items.count
         textCount = items.filter { $0.contentKind == .text }.count
         imageCount = items.filter { $0.contentKind == .image }.count
+        fileCount = items.filter { $0.isFileClip }.count
+        webLinkCount = items.filter { $0.contentKind == .link && !$0.isFileClip }.count
     }
 }
 

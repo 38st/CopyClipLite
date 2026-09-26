@@ -87,6 +87,80 @@ extension ClipboardStoreTests {
         XCTAssertEqual(store.backupInventory.count, 1)
     }
 
+    func testLinkOnlyExportPreviewReportsOneWebLink() throws {
+        let directory = try makeTemporaryDirectory()
+        let storage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Source"))
+        let exportURL = directory.appendingPathComponent("link-only.json")
+        let link = ClipboardItem(
+            link: ClipboardLinkContent(
+                url: try XCTUnwrap(URL(string: "https://example.com/page")),
+                title: "Example"
+            )
+        )
+        try storage.export([link], to: exportURL)
+
+        let preview = try storage.importPreview(from: exportURL)
+
+        XCTAssertEqual(preview.itemCount, 1)
+        XCTAssertEqual(preview.textCount, 0)
+        XCTAssertEqual(preview.imageCount, 0)
+        XCTAssertEqual(preview.fileCount, 0)
+        XCTAssertEqual(preview.webLinkCount, 1)
+        XCTAssertEqual(
+            DataSettingsView.importConfirmationTitle(for: preview),
+            "Import 1 clip (0 text, 0 images, 0 files, 1 web link)?"
+        )
+    }
+
+    func testMixedFileAndWebLinkImportPreviewCountsEveryKindWithCorrectPluralization() async throws {
+        let directory = try makeTemporaryDirectory()
+        let sourceStorage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Source"))
+        let store = ClipboardStore(
+            pasteboard: makePasteboard(),
+            storage: ClipboardStorage(appDirectory: directory.appendingPathComponent("Store")),
+            defaults: makeDefaults(),
+            sourceApplicationProvider: { nil }
+        )
+        let image = ClipboardImagePayload(data: try makePNGData(width: 2, height: 2), width: 2, height: 2)
+        let cases = [
+            (1, "Import 4 clips (1 text, 1 image, 1 file, 1 web link)?"),
+            (2, "Import 8 clips (2 text, 2 images, 2 files, 2 web links)?"),
+        ]
+
+        for (count, expectedTitle) in cases {
+            let items = try (0..<count).flatMap { index in
+                [
+                    ClipboardItem(text: "https://example.com/plain-text-\(index)"),
+                    ClipboardItem(image: image),
+                    ClipboardItem(
+                        link: ClipboardLinkContent(
+                            url: URL(fileURLWithPath: "/tmp/notes-\(index).txt"),
+                            title: nil
+                        )
+                    ),
+                    ClipboardItem(
+                        link: ClipboardLinkContent(
+                            url: try XCTUnwrap(URL(string: "https://example.com/page-\(index)")),
+                            title: nil
+                        )
+                    ),
+                ]
+            }
+            let importURL = directory.appendingPathComponent("mixed-\(count).json")
+            try sourceStorage.export(items, to: importURL)
+
+            let artifact = try await store.prepareImport(from: importURL)
+            let preview = store.importPlan(for: artifact).artifact.preview
+
+            XCTAssertEqual(preview.itemCount, count * 4)
+            XCTAssertEqual(preview.textCount, count)
+            XCTAssertEqual(preview.imageCount, count)
+            XCTAssertEqual(preview.fileCount, count)
+            XCTAssertEqual(preview.webLinkCount, count)
+            XCTAssertEqual(DataSettingsView.importConfirmationTitle(for: preview), expectedTitle)
+        }
+    }
+
     func testAsyncImportAppliesExactPreviewedArtifactWhenSourceChanges() async throws {
         let directory = try makeTemporaryDirectory()
         let storage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Store"))

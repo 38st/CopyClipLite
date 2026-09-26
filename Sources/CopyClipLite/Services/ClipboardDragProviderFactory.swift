@@ -136,7 +136,9 @@ struct ClipboardDragProviderFactory {
         // A file clip already points at a real file, so hand the receiver the URL
         // itself rather than staging a copy the way image clips have to.
         let provider = NSItemProvider(object: link.url as NSURL)
-        provider.suggestedName = link.subtitle ?? link.url.lastPathComponent
+        provider.suggestedName = link.isFileURL
+            ? link.url.lastPathComponent
+            : (link.subtitle ?? link.url.lastPathComponent)
         return provider
     }
 

@@ -110,6 +110,27 @@ final class ClipboardTransferRegressionTests: XCTestCase {
         )
     }
 
+    func testFileDragSuggestedNameUsesFilenameInsteadOfContainingFolder() {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "CopyClipLite-DragRegression-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let factory = ClipboardDragProviderFactory(
+            imageReader: CountingClipboardImageReader(data: Data()),
+            stagingDirectory: root
+        )
+        let link = ClipboardLinkContent(
+            url: URL(fileURLWithPath: "/Users/someone/Documents/notes.txt"),
+            title: "Meeting notes"
+        )
+
+        let provider = factory.provider(for: ClipboardItem(link: link))
+
+        XCTAssertEqual(link.subtitle, "/Users/someone/Documents")
+        XCTAssertEqual(provider.suggestedName, "notes.txt")
+    }
+
     func testImageDragStagingIsLazyPrivateAndRemovedWithProvider() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "CopyClipLite-DragRegression-\(UUID().uuidString)",

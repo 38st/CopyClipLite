@@ -16,11 +16,6 @@ struct ClipboardPasteboardRepresentation: Sendable, Equatable {
     }
 }
 
-struct ClipboardPasteboardWriteRequest: Sendable, Equatable {
-    let required: [ClipboardPasteboardRepresentation]
-    let optional: [ClipboardPasteboardRepresentation]
-}
-
 enum ClipboardPasteboardWriteResult: Sendable, Equatable {
     case success
     case degraded(optionalTypes: [String])

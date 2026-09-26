@@ -2,11 +2,6 @@ import AppKit
 import Combine
 import Foundation
 
-enum ClipboardImportStrategy: Sendable, Equatable {
-    case merge
-    case replace
-}
-
 struct ClipboardStoreClock: Sendable {
     var now: @Sendable () -> Date
     var sleep: @Sendable (UInt64) async throws -> Void
@@ -430,7 +425,6 @@ final class ClipboardStore: ObservableObject {
             artifact: artifact,
             currentItems: items,
             policy: historyPolicy,
-            retentionPolicy: retentionPolicy,
             now: now ?? clock.now()
         )
     }
@@ -515,11 +509,15 @@ final class ClipboardStore: ObservableObject {
             imageData = nil
         }
 
-        let writeResult = writeToPasteboard(
+        guard let request = ClipboardPasteboardWriteRequest.copying(
             item,
             imageData: imageData,
             includingRichText: includingRichText
-        )
+        ) else {
+            storageErrorMessage = "The clip could not be written to the system clipboard."
+            return false
+        }
+        let writeResult = pasteboardWriter.write(request)
         guard writeResult.wroteRequiredRepresentations else {
             storageErrorMessage = "The clip could not be written to the system clipboard."
             return false
@@ -556,14 +554,7 @@ final class ClipboardStore: ObservableObject {
             return
         }
 
-        let result = pasteboardWriter.write(
-            ClipboardPasteboardWriteRequest(
-                required: [
-                    ClipboardPasteboardRepresentation(.string, value: .string(transformedText))
-                ],
-                optional: []
-            )
-        )
+        let result = pasteboardWriter.write(.plainText(transformedText))
         guard result.wroteRequiredRepresentations else {
             storageErrorMessage = "The transformed clip could not be written to the system clipboard."
             return
@@ -953,71 +944,6 @@ final class ClipboardStore: ObservableObject {
         persist()
     }
 
-    @discardableResult
-    private func writeToPasteboard(
-        _ item: ClipboardItem,
-        imageData: Data?,
-        includingRichText: Bool = true
-    ) -> ClipboardPasteboardWriteResult {
-        let request: ClipboardPasteboardWriteRequest
-        switch item.contentKind {
-        case .text:
-            var optional: [ClipboardPasteboardRepresentation] = []
-            if includingRichText {
-                if let rtfData = item.rtfData {
-                    optional.append(ClipboardPasteboardRepresentation(.rtf, value: .data(rtfData)))
-                }
-                if let htmlData = item.htmlData {
-                    optional.append(ClipboardPasteboardRepresentation(.html, value: .data(htmlData)))
-                }
-            }
-            request = ClipboardPasteboardWriteRequest(
-                required: [
-                    ClipboardPasteboardRepresentation(.string, value: .string(item.text))
-                ],
-                optional: optional
-            )
-        case .image:
-            guard let imageData else {
-                return .failure
-            }
-            var optional: [ClipboardPasteboardRepresentation] = []
-            if !item.text.isEmpty {
-                optional.append(
-                    ClipboardPasteboardRepresentation(.string, value: .string(item.text))
-                )
-            }
-            request = ClipboardPasteboardWriteRequest(
-                required: [
-                    ClipboardPasteboardRepresentation(.png, value: .data(imageData))
-                ],
-                optional: optional
-            )
-        case .link:
-            guard let link = item.link else {
-                return .failure
-            }
-            // The plain string is required so any destination can take the clip;
-            // the typed URL is optional so a Finder-style paste gets a real file.
-            let urlType: NSPasteboard.PasteboardType = link.isFileURL ? .fileURL : .URL
-            request = ClipboardPasteboardWriteRequest(
-                required: [
-                    ClipboardPasteboardRepresentation(
-                        .string,
-                        value: .string(link.displayText)
-                    )
-                ],
-                optional: [
-                    ClipboardPasteboardRepresentation(
-                        urlType,
-                        value: .string(link.url.absoluteString)
-                    )
-                ]
-            )
-        }
-        return pasteboardWriter.write(request)
-    }
-
     private func installWorkspaceSourceTrackingIfNeeded() {
         guard usesWorkspaceSourceTracking else { return }
         workspaceActivationObserver = NotificationObserverToken(
@@ -1100,14 +1026,7 @@ final class ClipboardStore: ObservableObject {
         }
         let snapshot = items
         persistenceCoordinator.scheduleSave(snapshot) { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case let .success(persistedItems):
-                self.applyPersistedImageReferences(persistedItems)
-                self.refreshImageCleanupStatus()
-            case let .failure(error):
-                self.storageErrorMessage = error.localizedDescription
-            }
+            self?.applyPersistenceResult(result)
         }
     }
 
@@ -1121,12 +1040,9 @@ final class ClipboardStore: ObservableObject {
         let snapshot = items
         do {
             let persistedItems = try await persistenceCoordinator.flush(snapshot)
-            applyPersistedImageReferences(persistedItems)
-            refreshImageCleanupStatus()
-            return true
+            return applyPersistenceResult(.success(persistedItems))
         } catch {
-            storageErrorMessage = error.localizedDescription
-            return false
+            return applyPersistenceResult(.failure(error))
         }
     }
 
@@ -1138,12 +1054,19 @@ final class ClipboardStore: ObservableObject {
             return false
         }
         let snapshot = items
-        do {
-            let persistedItems = try persistenceCoordinator.flushSynchronously(snapshot)
+        return applyPersistenceResult(Result {
+            try persistenceCoordinator.flushSynchronously(snapshot)
+        })
+    }
+
+    @discardableResult
+    private func applyPersistenceResult(_ result: Result<[ClipboardItem], Error>) -> Bool {
+        switch result {
+        case let .success(persistedItems):
             applyPersistedImageReferences(persistedItems)
             refreshImageCleanupStatus()
             return true
-        } catch {
+        case let .failure(error):
             storageErrorMessage = error.localizedDescription
             return false
         }

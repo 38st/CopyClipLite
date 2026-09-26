@@ -45,12 +45,6 @@ enum ClipboardStorageError: LocalizedError, Equatable {
     }
 }
 
-struct ClipboardImportPreview: Equatable {
-    let itemCount: Int
-    let textCount: Int
-    let imageCount: Int
-}
-
 struct ClipboardThumbnailResult: Sendable {
     let data: Data
     let fileName: String
@@ -274,11 +268,7 @@ struct ClipboardStorage: @unchecked Sendable {
 
     func importPreview(from url: URL) throws -> ClipboardImportPreview {
         let items = try importItems(from: url)
-        return ClipboardImportPreview(
-            itemCount: items.count,
-            textCount: items.filter { $0.contentKind == .text }.count,
-            imageCount: items.filter { $0.contentKind == .image }.count
-        )
+        return ClipboardImportPreview(items: items)
     }
 
     @discardableResult

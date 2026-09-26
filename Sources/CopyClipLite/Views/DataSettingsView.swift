@@ -37,7 +37,7 @@ struct DataSettingsView: View {
             Button("Replace Existing History", role: .destructive) {
                 performImport(strategy: .replace)
             }
-            Button("Cancel", role: .cancel) { clearPendingImport() }
+            Button("Cancel", role: .cancel) { transferState.clearPendingImport() }
         } message: {
             Text(importConfirmationMessage)
         }
@@ -107,7 +107,7 @@ struct DataSettingsView: View {
                 Button("Unpin All…") { isConfirmingUnpinAll = true }
                     .disabled(pinnedItemCount == 0)
             }
-            .disabled(store.isTransferBusy || transferState.isLoadingDroppedImport)
+            .disabled(store.isTransferBusy || transferState.isTransferring)
             if let progress = store.transferProgressText
                 ?? (transferState.isLoadingDroppedImport ? "Reading dropped import…" : nil)
             {
@@ -212,59 +212,30 @@ struct DataSettingsView: View {
     }
 
     private func performExport() {
-        transferState.message = nil
-        transferState.error = nil
+        transferState.clearFeedback()
         guard
             let url = ClipboardHistoryTransferPanel.exportDestinationURL(
                 defaultFileName: "CopyClip-Lite-History.json"
             )
         else { return }
-
-        transferState.task = Task {
-            defer { transferState.task = nil }
-            do {
-                try await store.exportHistoryAsync(to: url)
-                transferState.message = "Exported history to \(url.lastPathComponent)."
-            } catch is CancellationError {
-                transferState.message = "Export cancelled."
-            } catch {
-                transferState.error = error.localizedDescription
-            }
-        }
+        transferState.exportHistory(to: url, store: store)
     }
 
     private func chooseImport() {
-        transferState.message = nil
-        transferState.error = nil
+        transferState.clearFeedback()
         guard let url = ClipboardHistoryTransferPanel.importSourceURL() else { return }
-
-        transferState.task = Task {
-            defer { transferState.task = nil }
-            do {
-                let artifact = try await store.prepareImport(from: url)
-                transferState.pendingImportPlan = store.importPlan(for: artifact)
-                transferState.isConfirmingImport = true
-            } catch is CancellationError {
-                clearPendingImport()
-                transferState.message = "Import cancelled."
-            } catch {
-                clearPendingImport()
-                transferState.error = error.localizedDescription
-            }
-        }
+        transferState.prepareImport(from: url, store: store)
     }
 
     private func handleDroppedImport(_ providers: [NSItemProvider]) -> Bool {
         guard !store.isTransferBusy,
-            !transferState.isLoadingDroppedImport,
+            !transferState.isTransferring,
             let provider = providers.first(where: {
                 $0.hasItemConformingToTypeIdentifier(UTType.json.identifier)
             })
         else {
             return false
         }
-        transferState.message = nil
-        transferState.error = nil
         transferState.loadDroppedImport(
             from: provider,
             sourceFileName: provider.suggestedName ?? "Dropped history.json",
@@ -274,42 +245,6 @@ struct DataSettingsView: View {
     }
 
     private func performImport(strategy: ClipboardImportStrategy) {
-        guard let plan = transferState.pendingImportPlan else { return }
-        transferState.isConfirmingImport = false
-        transferState.task = Task {
-            defer { transferState.task = nil }
-            do {
-                let projection = plan.projection(for: strategy)
-                let commit = try await store.importHistory(plan: plan, strategy: strategy)
-                transferState.message = importCompletionMessage(
-                    projection: projection,
-                    actualCount: commit.items.count,
-                    backupURL: commit.backupURL
-                )
-            } catch is CancellationError {
-                transferState.message = "Import cancelled before history was changed."
-            } catch {
-                transferState.error = error.localizedDescription
-            }
-            clearPendingImport()
-        }
-    }
-
-    private func clearPendingImport() {
-        transferState.pendingImportPlan = nil
-        transferState.isConfirmingImport = false
-    }
-
-    private func importCompletionMessage(
-        projection: ClipboardImportProjection,
-        actualCount: Int,
-        backupURL: URL
-    ) -> String {
-        "Imported \(actualCount) clips (\(projection.addedCount) added, "
-            + "\(projection.deduplicatedCount) deduplicated, "
-            + "\(projection.expiredCount) expired, "
-            + "\(projection.overLimitCount) over limit, "
-            + "\(projection.retainedPinnedCount) pinned). "
-            + "Backup: \(backupURL.lastPathComponent)"
+        transferState.importHistory(strategy: strategy, store: store)
     }
 }

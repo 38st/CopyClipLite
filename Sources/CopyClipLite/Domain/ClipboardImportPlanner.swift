@@ -5,7 +5,6 @@ enum ClipboardImportPlanner {
         artifact: ClipboardImportArtifact,
         currentItems: [ClipboardItem],
         policy: ClipboardHistoryPolicy,
-        retentionPolicy: ClipboardRetentionPolicy,
         now: Date
     ) -> ClipboardImportPlan {
         let mergeBeforePruning = ClipboardHistoryRules.merging(
@@ -35,7 +34,7 @@ enum ClipboardImportPlanner {
             artifact: artifact,
             currentItems: currentItems,
             historyLimit: policy.unpinnedLimit,
-            retentionPolicy: retentionPolicy,
+            retentionPolicy: policy.retentionPolicy,
             mergeItems: merge.items,
             mergeProjection: merge.projection,
             replaceItems: replace.items,

@@ -92,8 +92,11 @@ STORE_PIPELINE_GROUP_PERCENT="$(percentage_for_suffixes \
   "Services/ClipboardMonitoringSchedule.swift" \
   "Services/ClipboardThumbnailCache.swift" \
   "Services/ClipboardDragProviderFactory.swift" \
-  "Services/ClipboardStoreTransferCoordinator.swift")"
+  "Services/ClipboardStoreTransferCoordinator.swift" \
+  "Services/ClipboardPasteboardWriteRequest.swift" \
+  "Services/ClipboardPasteboardWriter.swift")"
 TRANSFER_GROUP_PERCENT="$(percentage_for_suffixes \
+  "Domain/ClipboardImport.swift" \
   "Services/ClipboardTransferService.swift" \
   "Services/ClipboardTransferCodec.swift" \
   "Services/ClipboardTransferFormat.swift" \

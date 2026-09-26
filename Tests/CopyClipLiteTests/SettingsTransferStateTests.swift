@@ -68,7 +68,7 @@ final class SettingsTransferStateTests: XCTestCase {
             store: store
         )
         try await waitUntil {
-            !state.isLoadingDroppedImport && state.task == nil
+            !state.isTransferring
         }
 
         let actualPlan = try XCTUnwrap(state.pendingImportPlan)
@@ -150,6 +150,186 @@ final class SettingsTransferStateTests: XCTestCase {
         XCTAssertEqual(store.items.map(\.text), ["existing"])
     }
 
+    func testFileImportPreviewsAndCommitsBothStrategiesWithBackup() async throws {
+        let data = try makeExportData(items: [ClipboardItem(text: "imported")])
+        let url = try makeTemporaryDirectory().appendingPathComponent("Selected.json")
+        try data.write(to: url)
+
+        for strategy in [ClipboardImportStrategy.merge, .replace] {
+            let store = try makeStore(items: [ClipboardItem(text: "existing")])
+            let state = SettingsTransferCoordinator()
+            state.prepareImport(from: url, store: store)
+            XCTAssertTrue(state.isTransferring)
+            try await waitUntil { !state.isTransferring }
+
+            let plan = try XCTUnwrap(state.pendingImportPlan)
+            XCTAssertTrue(state.isConfirmingImport)
+            XCTAssertEqual(plan.artifact.sourceFileName, "Selected.json")
+            XCTAssertEqual(store.items.map(\.text), ["existing"])
+            XCTAssertEqual(store.backupInventory.count, 0)
+
+            state.importHistory(strategy: strategy, store: store)
+            XCTAssertFalse(state.isConfirmingImport)
+            try await waitUntil { !state.isTransferring }
+
+            XCTAssertNil(state.error)
+            XCTAssertNil(state.pendingImportPlan)
+            XCTAssertEqual(store.items, plan.candidateItems(for: strategy))
+            XCTAssertTrue(state.message?.hasPrefix("Imported \(store.items.count) clips") == true)
+            XCTAssertEqual(store.backupInventory.count, 1)
+            let backup = try XCTUnwrap(store.backupInventory.urls.first)
+            let backedUp = try await store.prepareImport(from: backup)
+            XCTAssertEqual(backedUp.items.map(\.text), ["existing"])
+        }
+    }
+
+    func testExportReportsResultAndPreservesHistory() async throws {
+        let store = try makeStore(items: [ClipboardItem(text: "exported")])
+        let originalItems = store.items
+        let url = try makeTemporaryDirectory().appendingPathComponent("Saved.json")
+        let state = SettingsTransferCoordinator()
+
+        state.exportHistory(to: url, store: store)
+        try await waitUntil { !state.isTransferring }
+
+        XCTAssertNil(state.error)
+        XCTAssertEqual(state.message, "Exported history to Saved.json.")
+        XCTAssertEqual(store.items, originalItems)
+        let artifact = try await store.prepareImport(from: url)
+        XCTAssertEqual(artifact.items, originalItems)
+    }
+
+    func testTransferFailureClearsPreviewAndNextOperationClearsError() async throws {
+        let store = try makeStore(items: [ClipboardItem(text: "existing")])
+        let state = SettingsTransferCoordinator()
+        let url = try makeTemporaryDirectory().appendingPathComponent("Invalid.json")
+        try Data("invalid JSON".utf8).write(to: url)
+
+        state.prepareImport(from: url, store: store)
+        try await waitUntil { !state.isTransferring }
+        XCTAssertNotNil(state.error)
+        XCTAssertNil(state.pendingImportPlan)
+        XCTAssertFalse(state.isConfirmingImport)
+        XCTAssertEqual(store.items.map(\.text), ["existing"])
+
+        state.exportHistory(to: url, store: store)
+        XCTAssertNil(state.error)
+        try await waitUntil { !state.isTransferring }
+        XCTAssertEqual(state.message, "Exported history to Invalid.json.")
+        XCTAssertNil(state.error)
+    }
+
+    func testExpiredImportPlanReportsFailureWithoutChangingHistory() async throws {
+        let data = try makeExportData(items: [ClipboardItem(text: "imported")])
+        let store = try makeStore(items: [ClipboardItem(text: "existing")])
+        let state = SettingsTransferCoordinator()
+        state.loadDroppedImport(from: provider(returning: data), sourceFileName: "Drop.json", store: store)
+        try await waitUntil { !state.isTransferring }
+        XCTAssertNotNil(state.pendingImportPlan)
+        store.togglePin(try XCTUnwrap(store.items.first))
+        let originalItems = store.items
+
+        state.importHistory(strategy: .replace, store: store)
+        try await waitUntil { !state.isTransferring }
+
+        XCTAssertEqual(state.error, ClipboardStorageError.importPlanExpired.localizedDescription)
+        XCTAssertEqual(store.items, originalItems)
+        XCTAssertNil(state.pendingImportPlan)
+        XCTAssertFalse(state.isConfirmingImport)
+        XCTAssertEqual(store.backupInventory.count, 0)
+        let flushed = await store.flushPendingPersist()
+        XCTAssertTrue(flushed)
+    }
+
+    func testCancellationBeforeTaskStartsPreservesHistoryAndExportDestination() async throws {
+        let data = try makeExportData(items: [ClipboardItem(text: "imported")])
+        let url = try makeTemporaryDirectory().appendingPathComponent("Untouched.json")
+        try data.write(to: url)
+        let store = try makeStore(items: [ClipboardItem(text: "existing")])
+        let state = SettingsTransferCoordinator()
+
+        state.exportHistory(to: url, store: store)
+        state.cancelCurrentTransfer()
+        try await waitUntil { !state.isTransferring }
+        XCTAssertEqual(state.message, "Export cancelled.")
+        XCTAssertEqual(try Data(contentsOf: url), data)
+
+        state.prepareImport(from: url, store: store)
+        state.cancelCurrentTransfer()
+        try await waitUntil { !state.isTransferring }
+        XCTAssertEqual(state.message, "Import cancelled.")
+        XCTAssertNil(state.pendingImportPlan)
+        XCTAssertFalse(state.isConfirmingImport)
+
+        state.prepareImport(from: url, store: store)
+        try await waitUntil { !state.isTransferring }
+        XCTAssertNotNil(state.pendingImportPlan)
+        state.importHistory(strategy: .replace, store: store)
+        state.cancelCurrentTransfer()
+        try await waitUntil { !state.isTransferring }
+
+        XCTAssertEqual(state.message, "Import cancelled before history was changed.")
+        XCTAssertEqual(store.items.map(\.text), ["existing"])
+        XCTAssertEqual(store.backupInventory.count, 0)
+        XCTAssertNil(state.pendingImportPlan)
+        XCTAssertNil(state.error)
+    }
+
+    func testCancellingCommittedImportKeepsOwnershipUntilSuccessfulCompletion() async throws {
+        let gate = TransferCommitGate()
+        let store = try makeStore(items: [ClipboardItem(text: "existing")], faultInjector: gate.reach)
+        let data = try makeExportData(items: [ClipboardItem(text: "imported")])
+        let state = SettingsTransferCoordinator()
+        state.loadDroppedImport(from: provider(returning: data), sourceFileName: "Drop.json", store: store)
+        try await waitUntil { !state.isTransferring }
+        XCTAssertNotNil(state.pendingImportPlan)
+        // The first manifest saves the current history; the second commits the import.
+        gate.blockManifestWrite(number: 2)
+        defer { gate.release() }
+        state.importHistory(strategy: .replace, store: store)
+        try await waitUntil { gate.isBlocked }
+
+        state.cancelCurrentTransfer()
+        XCTAssertTrue(state.isTransferring)
+        let unwantedExport = try makeTemporaryDirectory().appendingPathComponent("Busy.json")
+        state.exportHistory(to: unwantedExport, store: store)
+        gate.release()
+        try await waitUntil { !state.isTransferring }
+
+        XCTAssertNil(state.error)
+        XCTAssertTrue(state.message?.hasPrefix("Imported 1 clips") == true)
+        XCTAssertEqual(store.items.map(\.text), ["imported"])
+        XCTAssertEqual(store.backupInventory.count, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: unwantedExport.path))
+    }
+
+    func testLateCancelledDropCannotReplaceNewFileImportPreview() async throws {
+        let data = try makeExportData(items: [ClipboardItem(text: "selected")])
+        let url = try makeTemporaryDirectory().appendingPathComponent("Selected.json")
+        try data.write(to: url)
+        let store = try makeStore(items: [ClipboardItem(text: "existing")])
+        let box = DataRepresentationCompletionBox()
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.json.identifier, visibility: .all) {
+            box.store($0)
+            return nil
+        }
+        let state = SettingsTransferCoordinator()
+        state.loadDroppedImport(from: provider, sourceFileName: "Cancelled.json", store: store)
+        try await waitUntil { box.isReady }
+        state.cancelCurrentTransfer()
+        state.prepareImport(from: url, store: store)
+        try await waitUntil { !state.isTransferring }
+        box.resolve(data: data, error: nil)
+        for _ in 0..<10 { await Task.yield() }
+
+        XCTAssertTrue(state.isConfirmingImport)
+        XCTAssertEqual(state.pendingImportPlan?.artifact.sourceFileName, "Selected.json")
+        XCTAssertNil(state.error)
+        XCTAssertNil(state.message)
+        XCTAssertEqual(store.items.map(\.text), ["existing"])
+    }
+
     private func provider(returning data: Data) -> NSItemProvider {
         let provider = NSItemProvider()
         provider.registerDataRepresentation(
@@ -171,9 +351,15 @@ final class SettingsTransferStateTests: XCTestCase {
         return try Data(contentsOf: url)
     }
 
-    private func makeStore(items: [ClipboardItem]) throws -> ClipboardStore {
+    private func makeStore(
+        items: [ClipboardItem],
+        faultInjector: ((ClipboardStorageFaultPoint) throws -> Void)? = nil
+    ) throws -> ClipboardStore {
         let directory = try makeTemporaryDirectory()
-        let storage = ClipboardStorage(appDirectory: directory.appendingPathComponent("Store"))
+        let storage = ClipboardStorage(
+            appDirectory: directory.appendingPathComponent("Store"),
+            faultInjector: faultInjector
+        )
         storage.save(items)
         let suiteName = "CopyClipLite.SettingsTransferStateTests.\(UUID().uuidString)"
         defaultsSuites.append(suiteName)
@@ -211,4 +397,35 @@ final class SettingsTransferStateTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(5))
         }
     }
+}
+
+private final class TransferCommitGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let proceed = DispatchSemaphore(value: 0)
+    private var remainingWrites: Int?
+    private var blocked = false
+
+    var isBlocked: Bool { lock.withLock { blocked } }
+
+    func blockManifestWrite(number: Int) {
+        lock.withLock { remainingWrites = number }
+    }
+
+    func reach(_ point: ClipboardStorageFaultPoint) throws {
+        guard point == .manifestWriteCompleted else { return }
+        let shouldBlock = lock.withLock {
+            guard let remainingWrites else { return false }
+            self.remainingWrites = remainingWrites - 1
+            guard remainingWrites == 1 else { return false }
+            self.remainingWrites = nil
+            blocked = true
+            return true
+        }
+        guard shouldBlock else { return }
+        guard proceed.wait(timeout: .now() + 5) == .success else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+    }
+
+    func release() { proceed.signal() }
 }

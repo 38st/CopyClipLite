@@ -746,12 +746,12 @@ final class ClipboardStore: ObservableObject {
         }
 
         if let link = ClipboardCaptureReader.link(from: pasteboard) {
+            captureWarning = capturedText.warning
             record(
                 link,
                 sourceApplication: sourceApplication,
                 capturedAt: clock.now()
             )
-            captureWarning = capturedText.warning
             return
         }
 
@@ -829,6 +829,12 @@ final class ClipboardStore: ObservableObject {
         sourceApplication: ClipboardSourceApplication? = nil,
         capturedAt: Date? = nil
     ) {
+        // Export validates the encoded URL, which can be longer than the copied text.
+        guard link.url.absoluteString.count <= ClipboardStorage.maximumImportedTextCharacters else {
+            captureWarning = "A link clip was skipped because its URL exceeds 20,000 characters."
+            return
+        }
+
         let capturedAt = capturedAt ?? clock.now()
         items = ClipboardHistoryRules.recordingLink(
             link,

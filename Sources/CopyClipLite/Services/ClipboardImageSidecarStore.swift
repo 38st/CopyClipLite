@@ -161,16 +161,20 @@ struct ClipboardImageSidecarStore: @unchecked Sendable {
         return portable
     }
 
-    func removeUnreferencedFiles(keeping items: [ClipboardItem]) {
-        guard let fileNames = try? fileManager.contentsOfDirectory(atPath: directoryURL.path) else {
-            return
-        }
+    func removeUnreferencedFiles(keeping items: [ClipboardItem]) throws {
+        let fileNames = try fileManager.contentsOfDirectory(atPath: directoryURL.path)
         let referenced = Set(items.flatMap {
             [$0.image?.fileName, $0.image?.thumbnailFileName].compactMap { $0 }
         })
+        var firstError: Error?
         for fileName in fileNames where !referenced.contains(fileName) {
-            try? fileManager.removeItem(at: directoryURL.appendingPathComponent(fileName))
+            do {
+                try fileManager.removeItem(at: directoryURL.appendingPathComponent(fileName))
+            } catch {
+                firstError = firstError ?? error
+            }
         }
+        if let firstError { throw firstError }
     }
 
     func removeFiles(_ urls: Set<URL>) {

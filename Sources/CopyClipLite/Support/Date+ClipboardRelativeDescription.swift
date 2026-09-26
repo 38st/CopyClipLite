@@ -1,11 +1,19 @@
 import Foundation
 
 extension Date {
+    // Bound both arithmetic and calendar formatting, including legacy local data.
+    var isSupportedClipboardTimestamp: Bool {
+        timeIntervalSinceReferenceDate.isFinite && self >= .distantPast && self <= .distantFuture
+    }
+
     var copyClipRelativeDescription: String {
         copyClipRelativeDescription(relativeTo: Date())
     }
 
     func copyClipRelativeDescription(relativeTo now: Date) -> String {
+        guard isSupportedClipboardTimestamp, now.isSupportedClipboardTimestamp else {
+            return "Unknown date"
+        }
         let elapsedSeconds = max(0, Int(now.timeIntervalSince(self)))
 
         if elapsedSeconds < 10 {

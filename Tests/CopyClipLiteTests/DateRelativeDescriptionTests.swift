@@ -17,4 +17,15 @@ final class DateRelativeDescriptionTests: XCTestCase {
 
         XCTAssertEqual(now.addingTimeInterval(30).copyClipRelativeDescription(relativeTo: now), "just now")
     }
+
+    func testUnsupportedDatesRenderWithoutIntegerOrCalendarOverflow() {
+        let now = Date()
+        for interval in [-1e30, 1e30, .infinity, -.infinity, .nan] {
+            let date = Date(timeIntervalSinceReferenceDate: interval)
+            XCTAssertEqual(date.copyClipRelativeDescription(relativeTo: now), "Unknown date")
+            XCTAssertEqual(now.copyClipRelativeDescription(relativeTo: date), "Unknown date")
+        }
+        XCTAssertNotEqual(Date.distantPast.copyClipRelativeDescription(relativeTo: now), "Unknown date")
+        XCTAssertEqual(Date.distantFuture.copyClipRelativeDescription(relativeTo: now), "just now")
+    }
 }

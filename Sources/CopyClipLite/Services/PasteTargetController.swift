@@ -219,6 +219,7 @@ final class PasteTargetController: ObservableObject {
             return
         }
 
+        let copiedChangeCount = store.pasteboardChangeCount
         pasteRequestGeneration &+= 1
         let requestGeneration = pasteRequestGeneration
         let targetName = target.pasteLocalizedName ?? "The destination app"
@@ -231,7 +232,8 @@ final class PasteTargetController: ObservableObject {
             fail(
                 "\(targetName) could not be activated.",
                 restoreUI: true,
-                clipWasCopied: true
+                clipWasCopied: true,
+                clipboardWasReplaced: store.pasteboardChangeCount != copiedChangeCount
             )
             return
         }
@@ -249,6 +251,9 @@ final class PasteTargetController: ObservableObject {
             let outcome = await attempt.run(
                 isCurrent: { [weak self] in
                     self?.pasteRequestGeneration == requestGeneration
+                },
+                clipboardIsUnchanged: {
+                    store.pasteboardChangeCount == copiedChangeCount
                 },
                 onPosting: { [weak self] in
                     self?.attemptState = .posting(target: targetName)
@@ -271,6 +276,13 @@ final class PasteTargetController: ObservableObject {
                     restoreUI: true,
                     clipWasCopied: true,
                     kind: .permission
+                )
+            case .clipboardChanged:
+                self.fail(
+                    "The clipboard changed before Direct Paste completed.",
+                    restoreUI: true,
+                    clipWasCopied: true,
+                    clipboardWasReplaced: true
                 )
             case .posted:
                 self.pendingPasteTask = nil
@@ -335,13 +347,14 @@ final class PasteTargetController: ObservableObject {
         _ message: String,
         restoreUI: Bool,
         clipWasCopied: Bool,
+        clipboardWasReplaced: Bool = false,
         kind: FailureKind = .other
     ) {
         pendingPasteTask?.cancel()
         pendingPasteTask = nil
-        let outcome = clipWasCopied
-            ? "The clip is still on your clipboard."
-            : "Nothing was copied."
+        let outcome = clipboardWasReplaced
+            ? "Nothing was pasted. Your newer clipboard content was kept."
+            : (clipWasCopied ? "The clip is still on your clipboard." : "Nothing was copied.")
         let fullMessage = "\(message) \(outcome)"
         lastError = fullMessage
         lastFailureKind = kind

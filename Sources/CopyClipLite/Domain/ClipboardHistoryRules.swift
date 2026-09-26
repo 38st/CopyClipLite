@@ -46,8 +46,11 @@ enum ClipboardHistoryRules {
         var result = existing
 
         for importedItem in imported {
+            // An earlier content match must not steal an identity already in the list.
             let matchingIndex = result.firstIndex {
-                matchesForImport($0, importedItem)
+                $0.id == importedItem.id
+            } ?? result.firstIndex {
+                contentMatchesForImport($0, importedItem)
             }
             guard let matchingIndex else {
                 result.append(importedItem)
@@ -174,11 +177,10 @@ enum ClipboardHistoryRules {
         return items
     }
 
-    private static func matchesForImport(
+    private static func contentMatchesForImport(
         _ existingItem: ClipboardItem,
         _ importedItem: ClipboardItem
     ) -> Bool {
-        if existingItem.id == importedItem.id { return true }
         guard existingItem.contentKind == importedItem.contentKind else { return false }
         switch importedItem.contentKind {
         case .text:

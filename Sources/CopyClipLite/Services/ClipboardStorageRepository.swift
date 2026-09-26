@@ -11,6 +11,8 @@ struct ClipboardBackupInventory: Equatable, Sendable {
 
 protocol ClipboardHistoryRepository: Sendable {
     var fileURL: URL { get }
+    /// A manifest commit may succeed while unreferenced image files remain on disk.
+    var imageCleanupPending: Bool { get }
 
     func loadResult() -> Result<[ClipboardItem], ClipboardStorageError>
 

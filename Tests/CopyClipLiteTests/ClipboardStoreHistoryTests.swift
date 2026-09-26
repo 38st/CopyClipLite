@@ -539,6 +539,7 @@ struct FailingBackupPurgeRepository: ClipboardStoreRepository {
     let storage: ClipboardStorage
 
     var fileURL: URL { storage.fileURL }
+    var imageCleanupPending: Bool { storage.imageCleanupPending }
 
     func loadResult() -> Result<[ClipboardItem], ClipboardStorageError> {
         storage.loadResult()
@@ -583,6 +584,7 @@ struct FailingBackupPurgeRepository: ClipboardStoreRepository {
 
 private final class BlockingSaveRepository: ClipboardStoreRepository, @unchecked Sendable {
     let storage: ClipboardStorage
+    var imageCleanupPending: Bool { storage.imageCleanupPending }
     private let lock = NSLock()
     private let proceed = DispatchSemaphore(value: 0)
     private var shouldBlock = false

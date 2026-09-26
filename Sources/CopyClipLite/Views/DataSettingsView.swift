@@ -81,6 +81,15 @@ struct DataSettingsView: View {
             if let errorMessage = store.storageErrorMessage {
                 SettingsErrorText(errorMessage)
             }
+            if store.imageCleanupPending {
+                if store.storageErrorMessage != ClipboardStore.imageCleanupErrorMessage {
+                    SettingsErrorText(ClipboardStore.imageCleanupErrorMessage)
+                }
+                Button("Retry Image Cleanup") {
+                    Task { await store.retryImageCleanup() }
+                }
+                .disabled(store.isTransferBusy)
+            }
         }
     }
 

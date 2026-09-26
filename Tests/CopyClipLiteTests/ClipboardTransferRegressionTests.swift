@@ -51,6 +51,39 @@ private func posixPermissions(at url: URL) throws -> Int {
 
 @MainActor
 final class ClipboardTransferRegressionTests: XCTestCase {
+    func testCurrentAndLegacyImportsRejectUnsupportedTimestampBounds() throws {
+        for timestamp in ["-1e30", "1e30"] {
+            for field in ["createdAt", "lastCopiedAt"] {
+                let record = """
+                {"id":"AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE","text":"synthetic",
+                 "contentKind":"text","createdAt":\(field == "createdAt" ? timestamp : "0"),
+                 "lastCopiedAt":\(field == "lastCopiedAt" ? timestamp : "0"),"isPinned":true,"copyCount":1}
+                """
+                for document in [
+                    "[\(record)]",
+                    "{\"format\":\"CopyClipLite\",\"version\":1,\"items\":[\(record)]}"
+                ] {
+                    XCTAssertThrowsError(try ClipboardTransferCodec.decode(Data(document.utf8))) { error in
+                        XCTAssertEqual(
+                            error as? ClipboardStorageError,
+                            .invalidImportedItem("timestamps are outside the supported date range")
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    func testOrdinaryOldPinnedDatesRemainPortableButUnsupportedLocalDatesDoNotExport() throws {
+        let oldDate = Date(timeIntervalSince1970: -1_000_000)
+        let valid = ClipboardItem(text: "old", createdAt: oldDate, lastCopiedAt: oldDate, isPinned: true)
+        let data = try ClipboardTransferCodec.encode([valid])
+        XCTAssertEqual(try ClipboardTransferCodec.decode(data), [valid])
+        var invalid = valid
+        invalid.lastCopiedAt = Date(timeIntervalSinceReferenceDate: -1e30)
+        XCTAssertThrowsError(try ClipboardTransferCodec.encode([invalid]))
+    }
+
     func testExportStagesOutsideDestinationAndAtomicallyMovesFinishedFile() async throws {
         let destinationDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(
             "CopyClipLite-ExportRegression-\(UUID().uuidString)",

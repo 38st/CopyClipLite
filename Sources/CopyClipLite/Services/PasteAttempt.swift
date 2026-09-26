@@ -4,6 +4,7 @@ enum PasteAttemptOutcome: Equatable {
     case posted
     case failed(message: String)
     case permissionRevoked
+    case clipboardChanged
     case cancelled
 }
 
@@ -17,6 +18,7 @@ struct PasteAttempt {
 
     func run(
         isCurrent: @escaping @MainActor () -> Bool,
+        clipboardIsUnchanged: @escaping @MainActor () -> Bool,
         onPosting: @escaping @MainActor () -> Void
     ) async -> PasteAttemptOutcome {
         let deadline = clampedSum(
@@ -34,6 +36,7 @@ struct PasteAttempt {
                 return .cancelled
             }
             guard !Task.isCancelled, isCurrent() else { return .cancelled }
+            guard clipboardIsUnchanged() else { return .clipboardChanged }
         }
 
         guard target.pasteIsActive else {
@@ -46,6 +49,7 @@ struct PasteAttempt {
             return .cancelled
         }
         guard !Task.isCancelled, isCurrent() else { return .cancelled }
+        guard clipboardIsUnchanged() else { return .clipboardChanged }
         guard !target.pasteIsTerminated, target.pasteIsActive else {
             return .failed(message: "The destination app was no longer ready, so nothing was pasted.")
         }
@@ -61,6 +65,7 @@ struct PasteAttempt {
         guard runtime.isAccessibilityGranted() else {
             return .permissionRevoked
         }
+        guard clipboardIsUnchanged() else { return .clipboardChanged }
         guard runtime.simulatePaste(target.pasteProcessIdentifier) else {
             return .failed(message: "macOS could not create the paste event.")
         }

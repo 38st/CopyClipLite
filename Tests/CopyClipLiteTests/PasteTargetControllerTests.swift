@@ -451,7 +451,56 @@ final class PasteTargetControllerTests: XCTestCase {
         XCTFail("Paste attempt never reached injected sleep", file: file, line: line)
     }
 
-    private func makeStoreAndItem() throws -> (ClipboardStore, ClipboardItem) {
+    func testClipboardReplacementDuringActivationOrStabilizationAbortsPaste() async throws {
+        for waitsForActivation in [true, false] {
+            let target = FakePasteTargetApplication()
+            target.becomesActiveOnActivation = !waitsForActivation
+            let state = PasteRuntimeState()
+            let clock = PasteTestClock()
+            let board = StubStorePasteboard()
+            let (store, item) = try makeStoreAndItem(pasteboard: board)
+            clock.onSleep = { _ in
+                board.clearContents()
+                board.setString("newer unrelated copy", forType: .string)
+            }
+            let controller = makeController(target: target, state: state, clock: clock)
+
+            controller.paste(item, using: store)
+            await waitForAttemptToSettle(controller)
+
+            XCTAssertEqual(state.simulateCount, 0)
+            XCTAssertEqual(state.restoreCount, 1)
+            XCTAssertEqual(board.string(forType: .string), "newer unrelated copy")
+            XCTAssertTrue(controller.lastError?.contains("Nothing was pasted") == true)
+            XCTAssertFalse(controller.lastError?.contains("still on your clipboard") == true)
+        }
+    }
+
+    func testClipboardReplacementFromPostingObserverIsCheckedBeforeEvent() async throws {
+        let target = FakePasteTargetApplication()
+        let state = PasteRuntimeState()
+        let controller = makeController(target: target, state: state)
+        let board = StubStorePasteboard()
+        let (store, item) = try makeStoreAndItem(pasteboard: board)
+        let observation = controller.$attemptState.sink { attemptState in
+            if case .posting = attemptState {
+                board.clearContents()
+                board.setString("observer replacement", forType: .string)
+            }
+        }
+        defer { observation.cancel() }
+
+        controller.paste(item, using: store)
+        await waitForAttemptToSettle(controller)
+
+        XCTAssertEqual(state.simulateCount, 0)
+        XCTAssertEqual(state.restoreCount, 1)
+        XCTAssertEqual(board.string(forType: .string), "observer replacement")
+    }
+
+    private func makeStoreAndItem(
+        pasteboard: StubStorePasteboard = StubStorePasteboard()
+    ) throws -> (ClipboardStore, ClipboardItem) {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("PasteTargetControllerTests-\(UUID().uuidString)")
         tempDirectories.append(directory)
@@ -462,7 +511,7 @@ final class PasteTargetControllerTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         defaults.removePersistentDomain(forName: suiteName)
         let store = ClipboardStore(
-            pasteboard: StubStorePasteboard(),
+            pasteboard: pasteboard,
             storage: storage,
             defaults: defaults,
             sourceApplicationProvider: { nil }

@@ -34,6 +34,8 @@ final class ClipboardStore: ObservableObject {
     private static let pruneInterval: TimeInterval = 15 * 60
     private static let backupCleanupErrorMessage =
         "Clipboard backups could not be deleted. Check the Data section in Settings."
+    static let imageCleanupErrorMessage =
+        "Some image files could not be deleted and remain on disk. Retry image cleanup in Settings → Data."
     private static let ignoredPasteboardTypes: Set<NSPasteboard.PasteboardType> = [
         NSPasteboard.PasteboardType("org.nspasteboard.TransientType"),
         NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType"),
@@ -84,6 +86,7 @@ final class ClipboardStore: ObservableObject {
     @Published private(set) var captureWarning: String?
     @Published private(set) var pasteboardWriteWarning: String?
     @Published private(set) var backupInventory: ClipboardBackupInventory
+    @Published private(set) var imageCleanupPending: Bool
     private let pasteboard: any ClipboardStorePasteboard
     private let storage: any ClipboardStoreRepository
     private let defaults: UserDefaults
@@ -110,6 +113,7 @@ final class ClipboardStore: ObservableObject {
 
     var isTransferBusy: Bool { transferCoordinator.isBusy }
     var transferProgressText: String? { transferCoordinator.progressText }
+    var pasteboardChangeCount: Int { pasteboard.changeCount }
 
     var storageLocation: URL {
         storage.fileURL
@@ -220,6 +224,7 @@ final class ClipboardStore: ObservableObject {
         self.monitoringSchedule = ClipboardMonitoringSchedule(clock: clock)
         self.thumbnailLoader = thumbnailLoader ?? { storage.thumbnailDataRepairingIfNeeded(for: $0) }
         self.backupInventory = (try? storage.backupInventory()) ?? .empty
+        self.imageCleanupPending = storage.imageCleanupPending
         let usesSystemPasteboard = pasteboard is NSPasteboard
         self.sourceApplicationProvider = sourceApplicationProvider
             ?? (usesSystemPasteboard ? ClipboardSourceApplication.frontmost : { nil })
@@ -230,7 +235,7 @@ final class ClipboardStore: ObservableObject {
         switch loadResult {
         case let .success(loadedItems):
             self.items = loadedItems.sorted { $0.lastCopiedAt > $1.lastCopiedAt }
-            self.storageErrorMessage = nil
+            self.storageErrorMessage = storage.imageCleanupPending ? Self.imageCleanupErrorMessage : nil
             self.persistenceBlockedByLoadFailure = false
             self.persistenceLoadFailureMessage = nil
         case let .failure(error):
@@ -359,6 +364,9 @@ final class ClipboardStore: ObservableObject {
 
         ignoredApplications.append(application)
         ignoredApplications.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        imageCaptureQueue.discardRequests {
+            $0.sourceApplication?.bundleIdentifier == application.bundleIdentifier
+        }
         persistIgnoredApplications()
     }
 
@@ -469,7 +477,7 @@ final class ClipboardStore: ObservableObject {
         clearExportLimitWarningIfResolved()
         persistenceBlockedByLoadFailure = false
         persistenceLoadFailureMessage = nil
-        storageErrorMessage = nil
+        refreshImageCleanupStatus()
         return commit
     }
 
@@ -646,12 +654,24 @@ final class ClipboardStore: ObservableObject {
     @discardableResult
     func delete(ids: Set<ClipboardItem.ID>) async -> Bool {
         guard !isTransferBusy else { return false }
-        let removedIDs = Set(items.filter { ids.contains($0.id) }.map(\.id))
+        let removedItems = items.filter { ids.contains($0.id) }
+        let removedIDs = Set(removedItems.map(\.id))
         guard !removedIDs.isEmpty else { return false }
+        let removedImageHashes = Set(removedItems.compactMap { $0.image?.contentHash })
+        let removedTexts = Set(removedItems.filter { $0.contentKind == .text }.map(\.text))
+        imageCaptureQueue.discardOutcomes { outcome in
+            switch outcome {
+            case let .processed(image, _):
+                return image.contentHash.map(removedImageHashes.contains) ?? false
+            case let .failed(_, request):
+                return request.associatedText.map { removedTexts.contains($0.text) } ?? false
+            }
+        }
         items.removeAll { removedIDs.contains($0.id) }
         thumbnailCache.invalidate(ids: removedIDs)
         clearExportLimitWarningIfResolved()
-        return await flushPendingPersist()
+        let saved = await flushPendingPersist()
+        return saved && !imageCleanupPending
     }
 
     @discardableResult
@@ -670,7 +690,8 @@ final class ClipboardStore: ObservableObject {
         guard await flushPendingPersist() else {
             return false
         }
-        return await purgeBackupsReportingFailureAsync()
+        let purgedBackups = await purgeBackupsReportingFailureAsync()
+        return purgedBackups && !imageCleanupPending
     }
 
     private func startMonitoring() {
@@ -842,7 +863,7 @@ final class ClipboardStore: ObservableObject {
             let itemsToKeep = itemsAfterQuitCleanup(loadedItems)
             _ = try storage.saveValidated(itemsToKeep)
             try storage.purgeBackups()
-            return true
+            return !storage.imageCleanupPending
         } catch {
             return false
         }
@@ -864,7 +885,8 @@ final class ClipboardStore: ObservableObject {
             thumbnailCache = ClipboardThumbnailCache()
             return false
         }
-        return purgeBackupsReportingFailure()
+        let purgedBackups = purgeBackupsReportingFailure()
+        return purgedBackups && !imageCleanupPending
     }
 
     nonisolated private static func itemsAfterQuitCleanup(
@@ -1082,7 +1104,7 @@ final class ClipboardStore: ObservableObject {
             switch result {
             case let .success(persistedItems):
                 self.applyPersistedImageReferences(persistedItems)
-                self.storageErrorMessage = nil
+                self.refreshImageCleanupStatus()
             case let .failure(error):
                 self.storageErrorMessage = error.localizedDescription
             }
@@ -1100,7 +1122,7 @@ final class ClipboardStore: ObservableObject {
         do {
             let persistedItems = try await persistenceCoordinator.flush(snapshot)
             applyPersistedImageReferences(persistedItems)
-            storageErrorMessage = nil
+            refreshImageCleanupStatus()
             return true
         } catch {
             storageErrorMessage = error.localizedDescription
@@ -1119,7 +1141,7 @@ final class ClipboardStore: ObservableObject {
         do {
             let persistedItems = try persistenceCoordinator.flushSynchronously(snapshot)
             applyPersistedImageReferences(persistedItems)
-            storageErrorMessage = nil
+            refreshImageCleanupStatus()
             return true
         } catch {
             storageErrorMessage = error.localizedDescription
@@ -1129,6 +1151,18 @@ final class ClipboardStore: ObservableObject {
 
     private func invalidatePendingPersist() {
         persistenceCoordinator.invalidateScheduledSave()
+    }
+
+    private func refreshImageCleanupStatus() {
+        imageCleanupPending = storage.imageCleanupPending
+        storageErrorMessage = imageCleanupPending ? Self.imageCleanupErrorMessage : nil
+    }
+
+    @discardableResult
+    func retryImageCleanup() async -> Bool {
+        guard !isTransferBusy else { return false }
+        let saved = await flushPendingPersist()
+        return saved && !imageCleanupPending
     }
 
     private func applyPersistedImageReferences(_ persistedItems: [ClipboardItem]) {

@@ -118,6 +118,7 @@ enum ClipboardTransferCodec {
         }
 
         for item in items {
+            try validateTimestampBounds(createdAt: item.createdAt, lastCopiedAt: item.lastCopiedAt)
             guard item.text.count <= ClipboardStorage.maximumImportedTextCharacters else {
                 throw ClipboardStorageError.invalidImportedItem("text exceeds 20,000 characters")
             }
@@ -242,6 +243,7 @@ enum ClipboardTransferCodec {
         let createdAt = transfer.createdAt ?? now
         let lastCopiedAt = transfer.lastCopiedAt ?? createdAt
         let copyCount = transfer.copyCount ?? 1
+        try validateTimestampBounds(createdAt: createdAt, lastCopiedAt: lastCopiedAt)
         if isCurrentFormat {
             let latestAllowedDate = now.addingTimeInterval(5 * 60)
             guard createdAt <= lastCopiedAt,
@@ -330,6 +332,13 @@ enum ClipboardTransferCodec {
                 copyCount: copyCount,
                 sourceApplication: transfer.sourceApplication
             )
+        }
+    }
+
+    private static func validateTimestampBounds(createdAt: Date, lastCopiedAt: Date) throws {
+        guard createdAt.isSupportedClipboardTimestamp,
+              lastCopiedAt.isSupportedClipboardTimestamp else {
+            throw ClipboardStorageError.invalidImportedItem("timestamps are outside the supported date range")
         }
     }
 

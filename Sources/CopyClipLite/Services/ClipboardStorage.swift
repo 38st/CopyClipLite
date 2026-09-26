@@ -82,7 +82,9 @@ struct ClipboardStorage: @unchecked Sendable {
     private let faultInjector: ((ClipboardStorageFaultPoint) throws -> Void)?
     private let imageSidecars: ClipboardImageSidecarStore
     private let lock = NSRecursiveLock()
-    private let loadProtection = ClipboardStorageLoadProtection()
+    private let state = ClipboardStorageState()
+
+    var imageCleanupPending: Bool { state.imageCleanupPending }
 
     init(
         fileManager: FileManager = .default,
@@ -117,7 +119,8 @@ struct ClipboardStorage: @unchecked Sendable {
         defer { lock.unlock() }
 
         guard fileManager.fileExists(atPath: fileURL.path) else {
-            loadProtection.allowWrites()
+            state.allowWrites()
+            removeUnreferencedImages(keeping: [])
             return .success([])
         }
 
@@ -125,7 +128,7 @@ struct ClipboardStorage: @unchecked Sendable {
         do {
             data = try Data(contentsOf: fileURL)
         } catch {
-            loadProtection.protectWrites()
+            state.protectWrites()
             return .failure(.unreadableHistory)
         }
 
@@ -144,9 +147,9 @@ struct ClipboardStorage: @unchecked Sendable {
         } catch {
             let backupURL = backupExistingStore(reason: "invalid")
             if backupURL == nil {
-                loadProtection.protectWrites()
+                state.protectWrites()
             } else {
-                loadProtection.allowWrites()
+                state.allowWrites()
             }
             return .failure(.invalidHistory(backupFileName: backupURL?.lastPathComponent))
         }
@@ -160,13 +163,14 @@ struct ClipboardStorage: @unchecked Sendable {
             let wasHydrated = imageSidecars.hydrateMetadata(in: &items)
             if wasExternalized || wasHydrated || Self.requiresNormalization(data) {
                 try writeHistory(items)
-                imageSidecars.removeUnreferencedFiles(keeping: items)
             }
-            loadProtection.allowWrites()
+            // Retry previous cleanup failures even when the manifest needs no migration.
+            removeUnreferencedImages(keeping: items)
+            state.allowWrites()
             return .success(items)
         } catch {
             imageSidecars.removeFiles(newlyCreatedFiles)
-            loadProtection.protectWrites()
+            state.protectWrites()
             return .failure(.persistenceFailed)
         }
     }
@@ -180,7 +184,7 @@ struct ClipboardStorage: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        guard loadProtection.writesAreAllowed,
+        guard state.writesAreAllowed,
               Self.hasUniqueIdentifiers(items) else {
             throw ClipboardStorageError.persistenceFailed
         }
@@ -198,8 +202,19 @@ struct ClipboardStorage: @unchecked Sendable {
             throw ClipboardStorageError.persistenceFailed
         }
 
-        imageSidecars.removeUnreferencedFiles(keeping: persistedItems)
+        removeUnreferencedImages(keeping: persistedItems)
         return persistedItems
+    }
+
+    private func removeUnreferencedImages(keeping items: [ClipboardItem]) {
+        do {
+            try imageSidecars.removeUnreferencedFiles(keeping: items)
+            state.setImageCleanupPending(false)
+        } catch {
+            // The manifest is already committed. Report cleanup separately so callers
+            // never roll back a successful import or resurrect logically deleted rows.
+            state.setImageCleanupPending(true)
+        }
     }
 
     func imageData(for item: ClipboardItem) -> Data? {
@@ -485,9 +500,22 @@ struct ClipboardStorage: @unchecked Sendable {
     }
 }
 
-private final class ClipboardStorageLoadProtection: @unchecked Sendable {
+private final class ClipboardStorageState: @unchecked Sendable {
     private let lock = NSLock()
     private var isProtected = false
+    private var hasPendingImageCleanup = false
+
+    var imageCleanupPending: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return hasPendingImageCleanup
+    }
+
+    func setImageCleanupPending(_ pending: Bool) {
+        lock.lock()
+        hasPendingImageCleanup = pending
+        lock.unlock()
+    }
 
     var writesAreAllowed: Bool {
         lock.lock()
